@@ -55,6 +55,15 @@ switch (mode)
         break;
 
     // Polyglot anahtar dogrulamasi + kitap denemesi
+    case "matchclock":
+        if (args.Length < 2) { Console.WriteLine("Kullanim: matchclock <motor> [oyun] [saniye] [ekleme_ms] [offset]"); break; }
+        Match.RunAgainstUciClock(args[1],
+            games: args.Length > 2 && int.TryParse(args[2], out int cg) ? cg : 20,
+            baseMs: (args.Length > 3 && int.TryParse(args[3], out int cb) ? cb : 30) * 1000,
+            incMs: args.Length > 4 && int.TryParse(args[4], out int ci) ? ci : 300,
+            firstGame: args.Length > 5 && int.TryParse(args[5], out int cf) ? cf : 0);
+        break;
+
     case "polyglot":
         PolyglotCheck(args.Length > 1 ? args[1] : "Book/book.bin");
         break;

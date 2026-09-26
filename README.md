@@ -135,6 +135,21 @@ hızlandı.
 | Hızlandırılmış sürüm | 43,5/60 (%72,5) — 30 G / 27 B / 3 Y |
 | Elo farkı | **+168** |
 
+## Turnuva saati ve zaman yönetimi
+
+Turnuvada süre hamle başına değil, saatle gelir: "toplam 10 dakika + hamle
+başına 6 saniye". Motorun payını kendi ayırması gerekir. Bunun için `TimeManager`
+ve UCI'da `wtime/btime/winc/binc` okuma eklendi — ayrıca maç aracına **saatli
+maç** modu (`matchclock`), çünkü zaman yönetimi sabit hamle süresiyle
+ölçülemez: saat yoksa ölçülecek bir şey de yoktur.
+
+Denenen fikir: pozisyon oynaksa (en iyi hamle değişiyorsa ya da puan düşüyorsa)
+ayrılan payı aşıp 3 kata kadar düşünmek. **58 oyun, 10 sn + 0,1 sn: −24 elo**
+(%95 güven −79..+31). Kazanç yok, hatta hafif eksi — geri alındı.
+
+Kalan davranış ölçülmüş olan: motor ayırdığı payı aşmıyor, ve bitiremeyeceği
+bir iterasyona başlamıyor. Altyapı duruyor, fikir tekrar ölçülebilir.
+
 ## SEE: pahalıyken zarardı, ucuzlayınca kazanç
 
 SEE (static exchange evaluation) bir alışın, o karede yaşanacak bütün

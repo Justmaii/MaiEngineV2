@@ -164,4 +164,100 @@ public static class Match
         double p = Math.Clamp(percent / 100.0, 0.01, 0.99);
         return -400 * Math.Log10(1 / p - 1);
     }
+
+    /// <summary>
+    /// SAATLİ maç: her tarafın toplam süresi ve hamle eklemesi var, payını
+    /// kendi ayırır. Sabit hamle süresiyle ölçülemeyen tek şey budur —
+    /// zaman yönetimi ancak saat varken bir anlam ifade eder.
+    /// Süresi biten taraf kaybeder.
+    /// </summary>
+    public static void RunAgainstUciClock(string enginePath, int games, int baseMs, int incMs,
+                                          int firstGame = 0, int maxPlies = 300)
+    {
+        using var opponent = new ExternalEngine(enginePath);
+        opponent.SetOption("OwnBook", "false");
+        opponent.IsReady();
+
+        int wins = 0, losses = 0, draws = 0, flags = 0;
+        Console.WriteLine($"MaiEngine  vs  {opponent.Name}");
+        Console.WriteLine($"{games} oyun, {baseMs / 1000.0:0.#} sn + {incMs / 1000.0:0.##} sn ekleme\n");
+
+        for (int index = 0; index < games; index++)
+        {
+            int game = firstGame + index;
+            bool weAreWhite = game % 2 == 0;
+            int result = PlayClockGame(opponent, weAreWhite, baseMs, incMs, maxPlies, seed: game, ref flags);
+
+            if (result == 0) draws++;
+            else if ((result > 0) == weAreWhite) wins++;
+            else losses++;
+
+            Console.Write(result == 0 ? "=" : ((result > 0) == weAreWhite ? "1" : "0"));
+            if ((index + 1) % 10 == 0) Console.Write(" ");
+            Console.Out.Flush();
+        }
+
+        double points = wins + draws / 2.0;
+        double percent = points / games * 100;
+        Console.WriteLine($"\n\nMaiEngine: {wins} galibiyet, {draws} beraberlik, {losses} yenilgi");
+        Console.WriteLine($"Skor: {points:0.#}/{games}  ({percent:0.#}%)");
+        Console.WriteLine($"Rakibe göre elo farkı: {EloDifference(percent):+0;-0;0}");
+        if (flags > 0) Console.WriteLine($"Süre aşımı: {flags}");
+    }
+
+    private static int PlayClockGame(ExternalEngine opponent, bool weAreWhite, int baseMs, int incMs,
+                                     int maxPlies, int seed, ref int flags)
+    {
+        var board = new Board();
+        var ours = new Search(32) { Random = new Random(seed), UseOpeningBook = false };
+        var playedMoves = new List<string>();
+        opponent.NewGame();
+
+        int whiteClock = baseMs, blackClock = baseMs;
+        var stopwatch = new System.Diagnostics.Stopwatch();
+
+        for (int ply = 0; ply < maxPlies; ply++)
+        {
+            var legal = MoveGenerator.GenerateLegalMoves(board);
+            if (legal.Count == 0)
+                return board.IsInCheck(board.SideToMove) ? (board.SideToMove == Piece.White ? -1 : 1) : 0;
+            if (board.HalfmoveClock >= 100 || board.IsRepetition()) return 0;
+
+            bool whiteToMove = board.SideToMove == Piece.White;
+            bool ourTurn = whiteToMove == weAreWhite;
+            int clock = whiteToMove ? whiteClock : blackClock;
+            if (clock <= 0) { flags++; return whiteToMove ? -1 : 1; }
+
+            Move move;
+            stopwatch.Restart();
+
+            if (ourTurn)
+            {
+                (int soft, int hard) = TimeManager.Allocate(clock, incMs, 0);
+                ours.SoftLimitMs = soft;
+                move = ours.FindBestMove(board, maxDepth: 40, timeLimitMs: hard, verbose: false);
+            }
+            else
+            {
+                string? text = opponent.ThinkWithClock(playedMoves, whiteClock, blackClock, incMs, incMs);
+                if (text == null) return 0;
+                move = Uci.ParseMove(board, text);
+                if (move.IsNull) { Console.Write($"[{text}?]"); return weAreWhite ? 1 : -1; }
+            }
+
+            int spent = (int)stopwatch.ElapsedMilliseconds;
+            if (whiteToMove) whiteClock = whiteClock - spent + incMs;
+            else blackClock = blackClock - spent + incMs;
+
+            // Süresi biten taraf kaybeder — turnuvada da böyle.
+            if ((whiteToMove ? whiteClock : blackClock) < 0) { flags++; return whiteToMove ? -1 : 1; }
+
+            if (move.IsNull) return 0;
+            playedMoves.Add(move.ToString());
+            board.MakeMove(move);
+        }
+
+        return 0;
+    }
+
 }

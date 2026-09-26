@@ -80,6 +80,24 @@ public sealed class ExternalEngine : IDisposable
         }
     }
 
+    /// <summary>Saatli düşünme: motor payını kendi ayırır (turnuvadaki gibi).</summary>
+    public string? ThinkWithClock(List<string> movesSoFar, int wtime, int btime, int winc, int binc)
+    {
+        Send("position startpos" + (movesSoFar.Count > 0 ? " moves " + string.Join(' ', movesSoFar) : ""));
+        Send($"go wtime {wtime} btime {btime} winc {winc} binc {binc}");
+
+        while (true)
+        {
+            string? line = _process.StandardOutput.ReadLine();
+            if (line == null) return null;
+            if (!line.StartsWith("bestmove")) continue;
+
+            string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string move = parts.Length > 1 ? parts[1] : "0000";
+            return move == "0000" || move == "(none)" ? null : move;
+        }
+    }
+
     public record Analysis(string BestMove, int ScoreCp, int MateIn, int Depth, string Pv);
 
     /// <summary>

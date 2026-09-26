@@ -197,10 +197,24 @@ public class Uci
             }
         }
 
-        if (moveTime == 0)
-            moveTime = AllocateTime(_board.SideToMove == Piece.White ? wtime : btime,
-                                    _board.SideToMove == Piece.White ? winc : binc,
-                                    movesToGo);
+        int softLimit = 0;
+        if (moveTime == 0 && Environment.GetEnvironmentVariable("MAIENGINE_OLDTIME") == "1")
+        {
+            // Karsilastirma icin eski kural: kalanin 1/25'i + eklemenin 3/4'u,
+            // yumusak sinir yok.
+            int left = _board.SideToMove == Piece.White ? wtime : btime;
+            int inc = _board.SideToMove == Piece.White ? winc : binc;
+            int div = movesToGo > 0 ? Math.Min(movesToGo, 30) : 25;
+            moveTime = left <= 0 ? 1000 : Math.Max(50, Math.Min(left / div + inc * 3 / 4, left / 2));
+        }
+        else if (moveTime == 0)
+        {
+            (softLimit, moveTime) = TimeManager.Allocate(
+                _board.SideToMove == Piece.White ? wtime : btime,
+                _board.SideToMove == Piece.White ? winc : binc,
+                movesToGo);
+        }
+        _search.SoftLimitMs = softLimit;
 
         _search.OnIteration = (d, score, nodes, ms, best) =>
         {
@@ -217,22 +231,6 @@ public class Uci
         _search.OnIteration = null;
 
         Console.WriteLine($"bestmove {(move.IsNull ? "0000" : move.ToString())}");
-    }
-
-    /// <summary>
-    /// Kalan süreden bu hamleye ne kadar ayıracağını hesaplar.
-    /// Basit ve güvenli kural: kalanın ~1/25'i + eklemenin çoğu,
-    /// ama asla kalanın yarısından fazlası değil.
-    /// </summary>
-    private static int AllocateTime(int timeLeft, int increment, int movesToGo)
-    {
-        if (timeLeft <= 0) return 1000;
-
-        int divisor = movesToGo > 0 ? Math.Min(movesToGo, 30) : 25;
-        int allocated = timeLeft / divisor + increment * 3 / 4;
-
-        // Zaman aşımına düşmemek için güvenlik payı.
-        return Math.Max(50, Math.Min(allocated, timeLeft / 2));
     }
 
     /// <summary>"e2e4" / "e7e8q" metnini, pozisyondaki legal hamlelerden biriyle eşleştirir.

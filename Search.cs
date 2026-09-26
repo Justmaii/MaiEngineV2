@@ -45,6 +45,13 @@ public class Search
     /// yaptı. Killer'lardan daha genel, daha zayıf bir sinyal.</summary>
     private readonly int[,] _history = new int[64, 64];
 
+    /// <summary>
+    /// Yeni bir iterasyona başlamak için son an (ms). 0 = kapalı, sadece
+    /// sert sınır kullanılır. Sert sınır (timeLimitMs) iterasyonu ORTASINDA
+    /// keser ve o iterasyonun sonucu atılır; yumuşak sınır o israfı önler.
+    /// </summary>
+    public int SoftLimitMs;
+
     /// <summary>Kaç iş parçacığı? 1 = klasik tek çekirdekli arama.</summary>
     public int Threads = 1;
 
@@ -261,6 +268,11 @@ public class Search
 
             // Dar pencere kökte kesme yaparsa bu iterasyonda en iyi hamle
             // atanmamış olabilir; o durumda önceki derinliğinkini koruyoruz.
+            bool moveChanged = !_bestMoveThisIteration.IsNull
+                               && !_previousBest.IsNull
+                               && _bestMoveThisIteration.ToString() != _previousBest.ToString();
+            int previousScore = LastScore;
+
             if (!_bestMoveThisIteration.IsNull) _bestMoveOverall = _bestMoveThisIteration;
             _previousBest = _bestMoveOverall;
             LastScore = score;
@@ -275,6 +287,20 @@ public class Search
 
             // Mat bulunduysa daha derine bakmanın anlamı yok.
             if (Math.Abs(score) > MateScore - 100) break;
+
+            // --- Yumuşak sınır ---
+            // Bir sonraki iterasyon kabaca bunun 2-3 katı sürer. Yumuşak sınırı
+            // çoktan geçmişsek başlamanın anlamı yok: yarım kalacak ve sonucu
+            // atılacak. Ama pozisyon oynaksa — en iyi hamle değiştiyse ya da
+            // puan düştüyse — biraz daha düşünmeye değer, çünkü tam da böyle
+            // anlarda yanlış hamle oynanır.
+            if (SoftLimitMs > 0)
+            {
+                long elapsed = _timer.ElapsedMilliseconds;
+                bool unstable = moveChanged || score < previousScore - 30;
+                long budget = unstable ? SoftLimitMs * 5L / 4 : SoftLimitMs;
+                if (elapsed >= budget) break;
+            }
         }
 
     }
