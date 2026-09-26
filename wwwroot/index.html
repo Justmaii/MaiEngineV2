@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MaiEngine</title>
+<!--
+  Chrome'un "otomatik koyu tema" özelliği (chrome://flags/#enable-force-dark)
+  açık olan tarayıcılarda sayfanın renklerini zorla ters çevirir: açık kareler
+  kararır, siyah taşların dolgusu beyaza döner ve iki taraf aynı görünür.
+  Sayfanın kendi koyu temasını desteklediğini bildirmek bunu kapatır —
+  color-scheme bildirimi tam olarak bunun içindir.
+-->
+<meta name="color-scheme" content="light dark">
+<style>
+  /* --- Mavi-beyaz (varsayılan) --- */
+  :root {
+    color-scheme: light dark;
+    --bg: #f2f5fa;
+    --panel: #ffffff;
+    --line: #d8e0ec;
+    --text: #1b2637;
+    --muted: #6b7a90;
+    --light: #edf2fa;
+    --dark: #6f93c4;
+    --accent: #2f6fb8;
+    --accent-soft: rgba(47, 111, 184, .38);
+    --last: rgba(245, 197, 66, .55);
+    --coord-on-light: #7089aa;
+    --coord-on-dark: #eaf1fb;
+    --piece-light: #ffffff;
+    --piece-dark: #22303f;
+    --piece-line: #1b2637;
+    --shadow: 0 10px 30px rgba(27, 38, 55, .14);
+  }
+  /* --- Sarı-beyaz --- */
+  body[data-theme="sari"] {
+    --bg: #faf6ec;
+    --panel: #fffdf7;
+    --line: #e8dcc0;
+    --text: #33291a;
+    --muted: #8a7a5d;
+    --light: #fbf4e2;
+    --dark: #dcb763;
+    --accent: #b8860b;
+    --accent-soft: rgba(184, 134, 11, .38);
+    --last: rgba(120, 170, 235, .5);
+    --coord-on-light: #a08c5e;
+    --coord-on-dark: #fffaee;
+    --piece-light: #fffdf7;
+    --piece-dark: #3b2f18;
+    --piece-line: #33291a;
+    --shadow: 0 10px 30px rgba(120, 95, 40, .16);
+  }
+
+  /* --- Koyu (isteyene) --- */
+  body[data-theme="koyu"] {
+    --bg: #14181f;
+    --panel: #1b2029;
+    --line: #2b323d;
+    --text: #e6ebf2;
+    --muted: #8b95a5;
+    --light: #8ba4c4;
+    --dark: #3f5673;
+    --accent: #6ea8e8;
+    --accent-soft: rgba(110, 168, 232, .42);
+    --last: rgba(245, 197, 66, .5);
+    --coord-on-light: #2b3a4d;
+    --coord-on-dark: #c7d6ea;
+    --piece-light: #f2f6fb;
+    --piece-dark: #18202b;
+    --piece-line: #0c1017;
+    --shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; gap: 20px;
+  }
+  h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
+
+  .layout { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    width: min(78vw, 560px); aspect-ratio: 1;
+    border-radius: 8px; overflow: hidden;
+    box-shadow: var(--shadow);
+    user-select: none; touch-action: manipulation;
+  }
+  .sq {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  .sq.light { background: var(--light); }
+  .sq.dark  { background: var(--dark); }
+  .sq.last  { box-shadow: inset 0 0 0 100px var(--last); }
+  .sq.sel::after {
+    content: ""; position: absolute; inset: 0;
+    box-shadow: inset 0 0 0 4px var(--accent);
+  }
+  .sq.target::before {
+    content: ""; position: absolute;
+    width: 30%; aspect-ratio: 1; border-radius: 50%;
+    background: var(--accent-soft);
+  }
+  .sq.target.occupied::before {
+    width: 88%; background: none;
+    box-shadow: inset 0 0 0 5px var(--accent-soft);
+  }
+  .sq.premove::after {
+    content: ""; position: absolute; inset: 0;
+    background: rgba(226, 106, 60, .42);
+  }
+  .sq.check { background: #d9534f !important; }
+
+  .piece { position: relative; z-index: 1; width: 90%; height: 90%; }
+  .piece svg { width: 100%; height: 100%; display: block; }
+  .piece svg > * { stroke: var(--piece-line); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+  .piece.w svg > * { fill: var(--piece-light); }
+  .piece.b svg > * { fill: var(--piece-dark); }
+  .piece.w .mark { fill: var(--piece-line); stroke: none; }
+  .piece.b .mark { fill: var(--piece-light); stroke: none; }
+  .piece.w .line { fill: none; stroke: var(--piece-line); stroke-width: 1.8; }
+  .piece.b .line { fill: none; stroke: var(--piece-light); stroke-width: 1.8; }
+
+  .coord {
+    position: absolute; font-size: 10px; font-weight: 700;
+    opacity: .85; pointer-events: none; line-height: 1;
+  }
+  .coord.file { right: 3px; bottom: 2px; }
+  .coord.rank { left: 3px; top: 2px; }
+  .sq.light .coord { color: var(--coord-on-light); }
+  .sq.dark  .coord { color: var(--coord-on-dark); }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px; width: 268px;
+    display: flex; flex-direction: column; gap: 14px;
+    box-shadow: var(--shadow);
+  }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .label { color: var(--muted); font-size: 13px; }
+  .value { font-variant-numeric: tabular-nums; font-weight: 650; }
+  .status { font-size: 14px; min-height: 1.5em; }
+  .status.strong { color: var(--accent); font-weight: 650; }
+  .hint { font-size: 12px; color: var(--muted); min-height: 1.4em; }
+
+  button, select {
+    font: inherit; color: var(--text);
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 8px 12px; cursor: pointer; width: 100%;
+  }
+  button:hover, select:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+
+  .moves {
+    font-size: 13px; color: var(--muted);
+    max-height: 180px; overflow-y: auto;
+    font-variant-numeric: tabular-nums;
+    display: grid; grid-template-columns: 2.2em 1fr 1fr; gap: 2px 8px; align-content: start;
+  }
+  .moves .n { opacity: .6; }
+
+  .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
+  .check input { width: auto; cursor: pointer; }
+
+  .trainbox {
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .verdict { font-size: 13px; font-weight: 650; min-height: 1.4em; }
+  .verdict.best   { color: #2e9e5b; }
+  .verdict.ok     { color: var(--muted); }
+  .verdict.inacc  { color: #c79a2a; }
+  .verdict.mistake{ color: #d2762c; }
+  .verdict.blunder{ color: #cc4b39; }
+
+  .moves .loss { font-size: 11px; }
+  .moves .l-best   { color: #2e9e5b; }
+  .moves .l-inacc  { color: #c79a2a; }
+  .moves .l-mistake{ color: #d2762c; }
+  .moves .l-blunder{ color: #cc4b39; }
+
+  .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .bar div { height: 100%; background: var(--accent); transition: width .3s ease; }
+</style>
+</head>
+<body>
+
+<h1>MaiEngine</h1>
+
+<div class="layout">
+  <div class="board" id="board"></div>
+
+  <div class="panel">
+    <div class="status" id="status">Beyaz oynuyor</div>
+    <div class="hint" id="hint"></div>
+
+    <div>
+      <div class="row"><span class="label">Değerlendirme</span><span class="value" id="eval">—</span></div>
+      <div class="bar"><div id="evalBar" style="width:50%"></div></div>
+    </div>
+
+    <div class="row"><span class="label">Derinlik</span><span class="value" id="depth">—</span></div>
+    <div class="row"><span class="label">Düğüm</span><span class="value" id="nodes">—</span></div>
+
+    <select id="theme">
+      <option value="mavi" selected>Mavi – beyaz</option>
+      <option value="sari">Sarı – beyaz</option>
+      <option value="koyu">Koyu</option>
+    </select>
+
+    <select id="think">
+      <option value="500">Hızlı (0,5 sn)</option>
+      <option value="1500" selected>Normal (1,5 sn)</option>
+      <option value="4000">Güçlü (4 sn)</option>
+      <option value="10000">Çok güçlü (10 sn)</option>
+    </select>
+
+    <select id="side">
+      <option value="w" selected>Beyaz oynuyorum</option>
+      <option value="b">Siyah oynuyorum</option>
+    </select>
+
+    <label class="check"><input type="checkbox" id="training"> Antrenman modu (Stockfish)</label>
+
+    <div id="trainBox" class="trainbox" hidden>
+      <div class="row"><span class="label">Stockfish</span><span class="value" id="sfScore">—</span></div>
+      <div class="row"><span class="label">En iyi hamle</span><span class="value" id="sfBest">—</span></div>
+      <div class="verdict" id="verdict"></div>
+    </div>
+
+    <button id="newGame">Yeni oyun</button>
+    <button id="undo">Geri al</button>
+
+    <div class="moves" id="moves"></div>
+  </div>
+</div>
+
+<script>
+const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+/* ------------------------------------------------------------------
+   Taşlar. Unicode taşlar küçük boyutta ayırt edilemiyordu; bunlar
+   yükseklik ve siluetle ayrılıyor: piyon kısa ve sade, fil yarıklı
+   başlıklı, at burunlu profil, kale dişli, vezir toplu taç, şah haçlı.
+------------------------------------------------------------------- */
+const SHAPES = {
+  p: `<circle cx="22.5" cy="11.5" r="4.8"/>
+      <path d="M18 16.4c-1.3 2.7.2 4.7 1.4 6.6L16.9 31h11.2l-2.5-8c1.2-1.9 2.7-3.9 1.4-6.6z"/>
+      <path d="M16.4 31h12.2v3H16.4z"/>
+      <path d="M12.6 34h19.8v3.1H12.6z"/>
+      <path d="M11 37.1h23v3H11z"/>`,
+
+  r: `<path d="M11 11.5h5.1v3.3h4.3v-3.3h4.2v3.3h4.3v-3.3H34v8.6H11z"/>
+      <path d="M13.2 20.1h18.6l-1.7 3.2H14.9z"/>
+      <path d="M14.9 23.3h15.2l1.4 10.7H13.5z"/>
+      <path d="M12 34h21v3.1H12z"/>
+      <path d="M10 37.1h25v3H10z"/>`,
+
+  n: `<path d="M24.3 8.4l2.4 4.3c4.4 1.4 7.3 5.6 7.3 11.9V34H13.7c-.2-7 2-11.4 6.8-15.5l-5.4-.6c-2.1-.2-2.5-2.8-.6-3.7l5.3-2.4.9-4.2c.3-1.4 2.9-1.6 3.6.8z"/>
+      <circle class="mark" cx="20.9" cy="16.2" r="1.5"/>
+      <path d="M11.5 34h22v3.1h-22z"/>
+      <path d="M9.5 37.1h26v3h-26z"/>`,
+
+  b: `<circle cx="22.5" cy="7.6" r="2.9"/>
+      <path d="M22.5 10.8c7.8 5.3 10.5 11.6 8.8 16.4H13.7c-1.7-4.8 1-11.1 8.8-16.4z"/>
+      <path class="line" d="M20 14.6l5.4 6.2"/>
+      <path d="M13.2 27.2h18.6v3.3H13.2z"/>
+      <path d="M14.6 30.5h15.8l1.2 3.5H13.4z"/>
+      <path d="M11.5 34h22v3.1h-22z"/>
+      <path d="M9.5 37.1h26v3h-26z"/>`,
+
+  q: `<path d="M8.6 22.8l2.4-12.2 5 8.3 6.5-10.7 6.5 10.7 5-8.3 2.4 12.2z"/>
+      <circle cx="8.6" cy="8.4" r="2.6"/>
+      <circle cx="16" cy="15.4" r="2.2"/>
+      <circle cx="22.5" cy="5.4" r="2.8"/>
+      <circle cx="29" cy="15.4" r="2.2"/>
+      <circle cx="36.4" cy="8.4" r="2.6"/>
+      <path d="M10.6 22.8h23.8v3.4H10.6z"/>
+      <path d="M12 26.2h21l1 7.8H11z"/>
+      <path d="M10.5 34h24v3.1h-24z"/>
+      <path d="M8.6 37.1h27.8v3H8.6z"/>`,
+
+  k: `<path d="M20.8 2.6h3.4v3.8h3.8v3.4h-3.8v3.9h-3.4V9.8H17V6.4h3.8z"/>
+      <path d="M22.5 14c8.4 0 11.6 6.2 10.4 11.3l-.9 3.9H13l-.9-3.9C10.9 20.2 14.1 14 22.5 14z"/>
+      <path d="M12.4 29.2h20.2v3.3H12.4z"/>
+      <path d="M13.4 32.5h18.2l.9 1.5H12.5z"/>
+      <path d="M10.5 34h24v3.1h-24z"/>
+      <path d="M8.6 37.1h27.8v3H8.6z"/>`,
+};
+
+function pieceSvg(letter) {
+  return `<svg viewBox="0 0 45 45" aria-hidden="true">${SHAPES[letter.toLowerCase()]}</svg>`;
+}
+
+const el = id => document.getElementById(id);
+const ui = {
+  board: el("board"), status: el("status"), hint: el("hint"),
+  eval: el("eval"), evalBar: el("evalBar"), depth: el("depth"), nodes: el("nodes"),
+  think: el("think"), side: el("side"), theme: el("theme"),
+  newGame: el("newGame"), undo: el("undo"), moves: el("moves"),
+  training: el("training"), trainBox: el("trainBox"),
+  sfScore: el("sfScore"), sfBest: el("sfBest"), verdict: el("verdict"),
+};
+
+let state = {
+  fen: START,
+  history: [],
+  legal: [],
+  selected: null,
+  lastMove: null,
+  premove: null,      // {from, to} — motor düşünürken verilen hamle
+  check: false,
+  busy: false,
+  playerSide: "w",
+  evals: [],        // her pozisyonun Stockfish puani (beyazin gozunden)
+  losses: [],       // her hamlenin kaybi (santipiyon)
+};
+
+function parseFen(fen) {
+  const squares = [];
+  for (const row of fen.split(" ")[0].split("/"))
+    for (const ch of row)
+      /\d/.test(ch) ? squares.push(...Array(+ch).fill(null)) : squares.push(ch);
+  return squares;
+}
+
+const squareName = i => "abcdefgh"[i % 8] + (8 - Math.floor(i / 8));
+const turnOf = fen => fen.split(" ")[1];
+
+function render() {
+  const squares = parseFen(state.fen);
+  const flipped = state.playerSide === "b";
+  ui.board.innerHTML = "";
+
+  for (let visual = 0; visual < 64; visual++) {
+    const i = flipped ? 63 - visual : visual;
+    const name = squareName(i);
+    const file = i % 8, rank = Math.floor(i / 8);
+
+    const sq = document.createElement("div");
+    sq.className = "sq " + ((file + rank) % 2 === 0 ? "light" : "dark");
+    sq.dataset.square = name;
+
+    if (state.lastMove && (state.lastMove.slice(0, 2) === name || state.lastMove.slice(2, 4) === name))
+      sq.classList.add("last");
+
+    if (state.premove && (state.premove.from === name || state.premove.to === name))
+      sq.classList.add("premove");
+
+    if (state.selected === name) sq.classList.add("sel");
+
+    if (state.selected && !state.busy) {
+      const isTarget = state.legal.some(m => m.slice(0, 2) === state.selected && m.slice(2, 4) === name);
+      if (isTarget) {
+        sq.classList.add("target");
+        if (squares[i]) sq.classList.add("occupied");
+      }
+    }
+
+    const piece = squares[i];
+    if (piece) {
+      const isWhite = piece === piece.toUpperCase();
+      if (state.check && piece.toLowerCase() === "k" && isWhite === (turnOf(state.fen) === "w"))
+        sq.classList.add("check");
+
+      const span = document.createElement("span");
+      span.className = "piece " + (isWhite ? "w" : "b");
+      span.innerHTML = pieceSvg(piece);
+      sq.appendChild(span);
+    }
+
+    if (Math.floor(visual / 8) === 7) {
+      const label = document.createElement("span");
+      label.className = "coord file";
+      label.textContent = name[0];
+      sq.appendChild(label);
+    }
+    if (visual % 8 === 0) {
+      const label = document.createElement("span");
+      label.className = "coord rank";
+      label.textContent = name[1];
+      sq.appendChild(label);
+    }
+
+    sq.addEventListener("click", () => onSquareClick(name));
+    sq.addEventListener("contextmenu", e => { e.preventDefault(); clearPremove(); });
+    ui.board.appendChild(sq);
+  }
+
+  renderMoveList();
+}
+
+function moveCell(text, moveIndex) {
+  const span = document.createElement("span");
+  if (!text) return span;
+  span.textContent = text;
+
+  const loss = state.losses[moveIndex];
+  if (loss !== undefined && ui.training.checked) {
+    const verdict = classify(loss);
+    if (verdict.cls !== "ok") {
+      const tag = document.createElement("span");
+      tag.className = "loss l-" + verdict.cls;
+      tag.textContent = verdict.cls === "best" ? " ✓" : ` −${loss}`;
+      span.appendChild(tag);
+    }
+  }
+  return span;
+}
+
+function renderMoveList() {
+  ui.moves.innerHTML = "";
+  const played = state.history.map(h => h.move).filter(Boolean);
+  for (let i = 0; i < played.length; i += 2) {
+    const n = document.createElement("span");
+    n.className = "n"; n.textContent = (i / 2 + 1) + ".";
+    ui.moves.appendChild(n);
+    ui.moves.appendChild(moveCell(played[i], i));
+    ui.moves.appendChild(moveCell(played[i + 1], i + 1));
+  }
+  ui.moves.scrollTop = ui.moves.scrollHeight;
+}
+
+async function post(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+async function refreshLegal() {
+  const data = await post("/api/legal", { fen: state.fen });
+  state.legal = data.moves;
+  state.check = data.check;
+  showStatus(data.status, data.turn);
+  render();
+  analysePosition();          // arka planda; arayuzu bekletmez
+  return data;
+}
+
+function showStatus(status, turn) {
+  const side = turn === "w" ? "Beyaz" : "Siyah";
+  ui.status.classList.remove("strong");
+
+  if (status === "mate") {
+    ui.status.textContent = side + " mat oldu.";
+    ui.status.classList.add("strong");
+  } else if (status === "stalemate") {
+    ui.status.textContent = "Pat — berabere.";
+    ui.status.classList.add("strong");
+  } else if (status === "fifty") {
+    ui.status.textContent = "50 hamle kuralı — berabere.";
+    ui.status.classList.add("strong");
+  } else if (state.busy) {
+    ui.status.textContent = "Motor düşünüyor...";
+  } else {
+    ui.status.textContent = side + " oynuyor" + (state.check ? " (şah!)" : "");
+  }
+}
+
+function clearPremove() {
+  if (!state.premove && !state.selected) return;
+  state.premove = null;
+  state.selected = null;
+  ui.hint.textContent = "";
+  render();
+}
+
+/* ------------------------------------------------------------------
+   Premove: motor düşünürken hamleni önceden verirsin. Sunucuya
+   sorulmaz (o pozisyon henüz yok), sadece kare çifti saklanır; sıra
+   sana geldiğinde legal hamleler arasında aranır, yoksa iptal edilir.
+------------------------------------------------------------------- */
+function onSquareClick(name) {
+  if (state.busy) return handlePremoveClick(name);
+  if (turnOf(state.fen) !== state.playerSide) return;
+
+  if (state.selected) {
+    const candidates = state.legal.filter(
+      m => m.slice(0, 2) === state.selected && m.slice(2, 4) === name);
+
+    if (candidates.length > 0) {
+      const move = candidates.length > 1 ? askPromotion(candidates) : candidates[0];
+      state.selected = null;
+      playMove(move);
+      return;
+    }
+  }
+
+  state.selected = state.legal.some(m => m.slice(0, 2) === name) ? name : null;
+  render();
+}
+
+function handlePremoveClick(name) {
+  const squares = parseFen(state.fen);
+  const index = "abcdefgh".indexOf(name[0]) + (8 - +name[1]) * 8;
+  const piece = squares[index];
+  const isOwnPiece = piece &&
+    (piece === piece.toUpperCase()) === (state.playerSide === "w");
+
+  if (state.selected) {
+    if (isOwnPiece) { state.selected = name; render(); return; }
+    state.premove = { from: state.selected, to: name };
+    state.selected = null;
+    ui.hint.textContent = `Premove: ${state.premove.from}${state.premove.to} (sağ tık iptal)`;
+    render();
+    return;
+  }
+
+  if (isOwnPiece) { state.selected = name; render(); }
+}
+
+async function tryPremove() {
+  if (!state.premove) return false;
+
+  const { from, to } = state.premove;
+  const candidates = state.legal.filter(m => m.slice(0, 2) === from && m.slice(2, 4) === to);
+  state.premove = null;
+
+  if (candidates.length === 0) {
+    ui.hint.textContent = "Premove geçersizdi, iptal edildi.";
+    render();
+    return false;
+  }
+
+  // Terfide sormadan vezir yap — premove'un amacı hız.
+  const move = candidates.find(m => m.length === 4 || m[4] === "q") || candidates[0];
+  ui.hint.textContent = "";
+  await playMove(move);
+  return true;
+}
+
+function askPromotion(candidates) {
+  const names = { q: "Vezir", r: "Kale", b: "Fil", n: "At" };
+  const options = candidates.map(m => m[4]).filter(Boolean);
+  const answer = prompt("Terfi: " + options.map(o => o + " = " + names[o]).join(", "), "q");
+  return candidates.find(m => m[4] === (answer || "q").trim().toLowerCase()) || candidates[0];
+}
+
+async function playMove(move) {
+  state.history.push({ fen: state.fen, move });
+  const data = await post("/api/play", { fen: state.fen, move });
+  state.fen = data.fen;
+  state.lastMove = move;
+  state.check = data.check;
+
+  await refreshLegal();
+  if (data.status === "ongoing") await engineMove();
+}
+
+async function engineMove() {
+  state.busy = true;
+  ui.status.textContent = "Motor düşünüyor...";
+  render();
+
+  let ongoing = false;
+  try {
+    const data = await post("/api/think", { fen: state.fen, moveTimeMs: +ui.think.value });
+    if (!data.move) return;
+
+    state.history.push({ fen: state.fen, move: data.move });
+    state.fen = data.fen;
+    state.lastMove = data.move;
+    ongoing = data.status === "ongoing";
+
+    ui.eval.textContent = data.scoreText;
+    ui.depth.textContent = data.depth;
+    ui.nodes.textContent = data.nodes.toLocaleString("tr-TR");
+
+    const clamped = Math.max(-600, Math.min(600, data.score));
+    ui.evalBar.style.width = (50 + clamped / 12) + "%";
+  } finally {
+    state.busy = false;
+    await refreshLegal();
+  }
+
+  if (ongoing) await tryPremove();
+}
+
+/* ------------------------------------------------------------------
+   Antrenman modu.
+
+   Her pozisyonu Stockfish'e bir kez sorarız. Ardışık iki değerlendirmenin
+   farkı, aradaki hamlenin kaybını verir:
+
+     kayip = (hamleden once, oynayanin gozunden en iyi)
+           - (hamleden sonra, yine oynayanin gozunden)
+
+   Puanlar beyazin gozunden geldigi icin siyah oynadiginda isaret cevrilir.
+------------------------------------------------------------------- */
+const VERDICTS = [
+  { limit: 20,  cls: "best",    label: "En iyi hamle" },
+  { limit: 50,  cls: "ok",      label: "İyi hamle" },
+  { limit: 100, cls: "inacc",   label: "Yanlışlık" },
+  { limit: 300, cls: "mistake", label: "Hata" },
+  { limit: Infinity, cls: "blunder", label: "Büyük hata" },
+];
+
+function classify(loss) {
+  return VERDICTS.find(v => loss < v.limit);
+}
+
+function formatScore(scoreWhite, mateIn) {
+  if (mateIn) return (mateIn > 0 ? "M" : "-M") + Math.abs(mateIn);
+  const pawns = scoreWhite / 100;
+  return (pawns >= 0 ? "+" : "") + pawns.toFixed(2);
+}
+
+async function analysePosition() {
+  if (!ui.training.checked) return;
+
+  const index = state.history.length;   // kacinci pozisyondayiz
+  const fen = state.fen;
+
+  let data;
+  try {
+    data = await post("/api/analyse", { fen, moveTimeMs: 300 });
+  } catch { return; }
+
+  if (!data.available) {
+    ui.sfScore.textContent = "kurulu değil";
+    ui.sfBest.textContent = "—";
+    ui.verdict.textContent = "Stockfish bulunamadı — brew install stockfish";
+    ui.verdict.className = "verdict";
+    return;
+  }
+  if (data.over) { ui.sfBest.textContent = "—"; return; }
+
+  // Sonuc HER ZAMAN saklanir. Cevap gelirken tahta ilerlemis olabilir
+  // (motor hemen oynadiysa); o pozisyonun puani yine de gecerlidir ve
+  // bir onceki hamlenin kaybini hesaplamak icin gerekir.
+  state.evals[index] = data.scoreWhite;
+
+  // Bir onceki hamlenin kaybi: iki ardisik degerlendirmenin farki.
+  const before = state.evals[index - 1];
+  if (before !== undefined && index > 0) {
+    // index. pozisyona gelen hamleyi kim oynadi? 1. pozisyon beyazin
+    // hamlesinden sonra olusur, 2. siyahinkinden sonra...
+    const moverIsWhite = index % 2 === 1;
+    const beforeMover = moverIsWhite ? before : -before;
+    const afterMover = moverIsWhite ? data.scoreWhite : -data.scoreWhite;
+    state.losses[index - 1] = Math.max(0, beforeMover - afterMover);
+  }
+
+  renderMoveList();
+
+  // Panel sadece guncel pozisyonu gosterir.
+  if (state.fen !== fen) return;
+
+  ui.sfScore.textContent = formatScore(data.scoreWhite, data.mateIn) + `  (d${data.depth})`;
+  ui.sfBest.textContent = data.bestMove;
+
+  const lastMove = state.history.length > 0
+    ? state.history[state.history.length - 1].move : null;
+  const loss = state.losses[index - 1];
+
+  if (lastMove && loss !== undefined) {
+    const verdict = classify(loss);
+    // Kayip "en iyi" esiginin altindaysa sayiyi gostermek kafa karistirir.
+    ui.verdict.textContent = `${lastMove}: ${verdict.label}` +
+      (loss >= 20 ? ` (−${loss})` : "");
+    ui.verdict.className = "verdict " + verdict.cls;
+  } else {
+    ui.verdict.textContent = "";
+    ui.verdict.className = "verdict";
+  }
+}
+
+ui.newGame.addEventListener("click", async () => {
+  state.playerSide = ui.side.value;
+  state.fen = START;
+  state.history = [];
+  state.selected = null;
+  state.lastMove = null;
+  state.premove = null;
+  state.evals = [];
+  state.losses = [];
+  ui.hint.textContent = "";
+  ui.verdict.textContent = "";
+  ui.eval.textContent = ui.depth.textContent = ui.nodes.textContent = "—";
+  ui.evalBar.style.width = "50%";
+  await refreshLegal();
+  if (state.playerSide === "b") await engineMove();
+});
+
+ui.undo.addEventListener("click", async () => {
+  if (state.busy || state.history.length === 0) return;
+  state.history.pop();
+  const previous = state.history.pop();
+  state.fen = previous ? previous.fen : START;
+  state.selected = null;
+  state.lastMove = null;
+  state.premove = null;
+  state.evals.length = state.history.length + 1;
+  state.losses.length = state.history.length;
+  ui.hint.textContent = "";
+  await refreshLegal();
+});
+
+ui.side.addEventListener("change", () => ui.newGame.click());
+
+ui.training.addEventListener("change", () => {
+  ui.trainBox.hidden = !ui.training.checked;
+  if (ui.training.checked) analysePosition();
+  else { ui.verdict.textContent = ""; renderMoveList(); }
+  try { localStorage.setItem("maiengine-training", ui.training.checked ? "1" : "0"); } catch {}
+});
+
+try {
+  if (localStorage.getItem("maiengine-training") === "1") {
+    ui.training.checked = true;
+    ui.trainBox.hidden = false;
+  }
+} catch {}
+
+ui.theme.addEventListener("change", () => {
+  document.body.dataset.theme = ui.theme.value;
+  try { localStorage.setItem("maiengine-theme", ui.theme.value); } catch {}
+});
+
+try {
+  const saved = localStorage.getItem("maiengine-theme");
+  if (saved) { ui.theme.value = saved; document.body.dataset.theme = saved; }
+} catch {}
+
+refreshLegal();
+</script>
+</body>
+</html>

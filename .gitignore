@@ -1,0 +1,20 @@
+# .NET derleme çıktıları
+bin/
+obj/
+*.user
+
+# Rider / Visual Studio
+.idea/
+.vs/
+
+# macOS
+.DS_Store
+
+# NuGet yerel ayarı
+nuget.config
+
+# NNUE ağı - 21 MB, ayrıca GPL; kendin indir (README'ye bak)
+*.nnue
+
+# Referans degerleri depoda kalsin, ag dosyasi kalmasin
+!docs/nnue-ref.txt
