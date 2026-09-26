@@ -9,14 +9,10 @@ public static class MoveGenerator
     {
         var pseudo = GeneratePseudoLegalMoves(board);
         var legal = new List<Move>(pseudo.Count);
-        int color = board.SideToMove;
 
         foreach (var move in pseudo)
-        {
-            var undo = board.MakeMove(move);
-            if (!board.IsInCheck(color)) legal.Add(move);
-            board.UnmakeMove(undo);
-        }
+            if (board.IsMoveLegal(move)) legal.Add(move);
+
         return legal;
     }
 

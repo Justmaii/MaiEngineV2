@@ -40,11 +40,94 @@ public class Board
     public static readonly (int df, int dr)[] KnightDirs =
         { (1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2) };
 
+
+    // ---- Bitboard'lar ----
+    // Mailbox dizisi (Squares) kalıyor, bitboard'lar onun ikinci bir görünümü.
+    // Tek yazma noktası SetSquare olduğu için ikisi asla ayrışamaz; yine de
+    // perft ağacında her düğümde karşılaştırılıyor (BitboardsConsistent).
+
+    /// <summary>[renk indeksi * 7 + taş türü] — o türden taşların maskesi.</summary>
+    public readonly ulong[] PieceBB = new ulong[14];
+
+    /// <summary>[0] beyazın bütün taşları, [1] siyahın.</summary>
+    public readonly ulong[] ColorBB = new ulong[2];
+
+    /// <summary>Üzerinde taş olan bütün kareler.</summary>
+    public ulong Occupied;
+
+    public ulong PiecesOf(int color, int type) => PieceBB[Piece.ColorIndex(color) * 7 + type];
+
+    /// <summary>Bir karenin içeriğini değiştirir ve bitboard'ları aynı anda günceller.
+    /// Tahtaya yazan HER yol buradan geçmek zorunda.</summary>
+    private void SetSquare(int sq, int piece)
+    {
+        ulong mask = 1UL << sq;
+        int old = Squares[sq];
+
+        if (old != Piece.None)
+        {
+            int c = Piece.ColorIndex(Piece.Color(old));
+            PieceBB[c * 7 + Piece.Type(old)] &= ~mask;
+            ColorBB[c] &= ~mask;
+            Occupied &= ~mask;
+        }
+
+        Squares[sq] = piece;
+
+        if (piece != Piece.None)
+        {
+            int c = Piece.ColorIndex(Piece.Color(piece));
+            PieceBB[c * 7 + Piece.Type(piece)] |= mask;
+            ColorBB[c] |= mask;
+            Occupied |= mask;
+        }
+    }
+
+    /// <summary>Bitboard'ları mailbox dizisinden sıfırdan kurar.</summary>
+    public void RebuildBitboards()
+    {
+        Array.Clear(PieceBB);
+        ColorBB[0] = ColorBB[1] = 0;
+        Occupied = 0;
+
+        for (int sq = 0; sq < 64; sq++)
+        {
+            int piece = Squares[sq];
+            if (piece == Piece.None) continue;
+            ulong mask = 1UL << sq;
+            int c = Piece.ColorIndex(Piece.Color(piece));
+            PieceBB[c * 7 + Piece.Type(piece)] |= mask;
+            ColorBB[c] |= mask;
+            Occupied |= mask;
+        }
+    }
+
+    /// <summary>Artımlı tutulan bitboard'lar hâlâ mailbox ile aynı şeyi mi anlatıyor?
+    /// Sadece doğrulama için — perft ağacında her düğümde çağrılıyor.</summary>
+    public bool BitboardsConsistent()
+    {
+        var pieceCopy = (ulong[])PieceBB.Clone();
+        var colorCopy = (ulong[])ColorBB.Clone();
+        ulong occupiedCopy = Occupied;
+
+        RebuildBitboards();
+
+        bool same = occupiedCopy == Occupied
+                    && colorCopy[0] == ColorBB[0] && colorCopy[1] == ColorBB[1];
+        for (int i = 0; i < PieceBB.Length && same; i++)
+            same = pieceCopy[i] == PieceBB[i];
+
+        return same;
+    }
+
     public Board(string fen = StartFen) => LoadFen(fen);
 
     public void LoadFen(string fen)
     {
         Array.Fill(Squares, Piece.None);
+        Array.Clear(PieceBB);
+        ColorBB[0] = ColorBB[1] = 0;
+        Occupied = 0;
         KingSquare[0] = KingSquare[1] = -1;
         CastlingRights = 0;
         EnPassantSquare = -1;
@@ -62,7 +145,7 @@ public class Board
             {
                 int piece = Piece.FromChar(c);
                 int sq = Square.FromFileRank(file, rank);
-                Squares[sq] = piece;
+                SetSquare(sq, piece);
                 if (Piece.Type(piece) == Piece.King)
                     KingSquare[Piece.ColorIndex(Piece.Color(piece))] = sq;
                 file++;
@@ -249,14 +332,14 @@ public class Board
 
         key ^= Zobrist.PieceKeys[piece, from]; // taş kalkış karesinden çıktı
 
-        Squares[to] = piece;
-        Squares[from] = Piece.None;
+        SetSquare(to, piece);
+        SetSquare(from, Piece.None);
 
         switch (move.Flag)
         {
             case MoveFlag.Promotion:
                 if (captured != Piece.None) key ^= Zobrist.PieceKeys[captured, to];
-                Squares[to] = move.PromotionType | color;
+                SetSquare(to, move.PromotionType | color);
                 key ^= Zobrist.PieceKeys[move.PromotionType | color, to];
                 break;
 
@@ -267,7 +350,7 @@ public class Board
                 PawnKey ^= Zobrist.PieceKeys[piece, to];
                 key ^= Zobrist.PieceKeys[Piece.Pawn | Piece.Opposite(color), capturedPawnSquare];
                 key ^= Zobrist.PieceKeys[piece, to];
-                Squares[capturedPawnSquare] = Piece.None;
+                SetSquare(capturedPawnSquare, Piece.None);
                 break;
 
             case MoveFlag.Castle:
@@ -284,8 +367,8 @@ public class Board
                 key ^= Zobrist.PieceKeys[piece, to];
                 key ^= Zobrist.PieceKeys[rook, rookFrom];
                 key ^= Zobrist.PieceKeys[rook, rookTo];
-                Squares[rookTo] = rook;
-                Squares[rookFrom] = Piece.None;
+                SetSquare(rookTo, rook);
+                SetSquare(rookFrom, Piece.None);
                 break;
 
             default:
@@ -338,13 +421,13 @@ public class Board
         int piece = Squares[to];
         if (move.Flag == MoveFlag.Promotion) piece = Piece.Pawn | color;
 
-        Squares[from] = piece;
-        Squares[to] = Piece.None;
+        SetSquare(from, piece);
+        SetSquare(to, Piece.None);
 
         switch (move.Flag)
         {
             case MoveFlag.EnPassant:
-                Squares[color == Piece.White ? to - 8 : to + 8] = undo.CapturedPiece;
+                SetSquare(color == Piece.White ? to - 8 : to + 8, undo.CapturedPiece);
                 break;
 
             case MoveFlag.Castle:
@@ -356,12 +439,12 @@ public class Board
                     58 => (56, 59),
                     _ => (-1, -1)
                 };
-                Squares[rookFrom] = Squares[rookTo];
-                Squares[rookTo] = Piece.None;
+                SetSquare(rookFrom, Squares[rookTo]);
+                SetSquare(rookTo, Piece.None);
                 break;
 
             default:
-                Squares[to] = undo.CapturedPiece;
+                SetSquare(to, undo.CapturedPiece);
                 break;
         }
 
@@ -429,7 +512,88 @@ public class Board
     // ------------------------------------------------------------------
 
     /// <summary><paramref name="sq"/> karesi <paramref name="byColor"/> tarafından tehdit ediliyor mu?</summary>
+    /// <summary>
+    /// Bir pseudo-legal hamle gerçekten legal mi — yani oynayan taraf kendi şahını
+    /// açıkta bırakıyor mu?
+    ///
+    /// Eskiden bu soru MakeMove + IsInCheck + UnmakeMove ile cevaplanıyordu. Ama
+    /// MakeMove artık Zobrist anahtarını, piyon anahtarını, tekrar geçmişini ve
+    /// en pahalısı NNUE accumulator'ını da güncelliyor — oysa bu testten sonra
+    /// hamlelerin çoğu hiç oynanmayacak. Burada sadece kareler (ve onlara bağlı
+    /// bitboard'lar) geçici olarak değiştiriliyor, soru soruluyor, geri alınıyor.
+    ///
+    /// Rok hamleleri üretim sırasında tam kontrol edildiği için burada ek iş yok.
+    /// </summary>
+    public bool IsMoveLegal(Move move)
+    {
+        int from = move.From, to = move.To;
+        int piece = Squares[from];
+        int color = Piece.Color(piece);
+        int colorIndex = Piece.ColorIndex(color);
+        int captured = Squares[to];
+
+        int landing = move.Flag == MoveFlag.Promotion ? move.PromotionType | color : piece;
+        SetSquare(to, landing);
+        SetSquare(from, Piece.None);
+
+        // Geçerken alışta alınan piyon varış karesinde değil, arkasında durur.
+        int epSquare = -1, epPiece = Piece.None;
+        if (move.Flag == MoveFlag.EnPassant)
+        {
+            epSquare = color == Piece.White ? to - 8 : to + 8;
+            epPiece = Squares[epSquare];
+            SetSquare(epSquare, Piece.None);
+        }
+
+        int savedKing = KingSquare[colorIndex];
+        if (Piece.Type(piece) == Piece.King) KingSquare[colorIndex] = to;
+
+        bool legal = !IsSquareAttacked(KingSquare[colorIndex], Piece.Opposite(color));
+
+        KingSquare[colorIndex] = savedKing;
+        SetSquare(from, piece);
+        SetSquare(to, captured);
+        if (epSquare >= 0) SetSquare(epSquare, epPiece);
+
+        return legal;
+    }
+
+    /// <summary>
+    /// sq karesi byColor tarafından vurulmuş mu? Aramanın en sık çağrılan
+    /// fonksiyonu: her hamlenin yasallığı ve her şah kontrolü buradan geçiyor.
+    ///
+    /// Bitboard mantığı tersten çalışıyor: "hangi taşlar buraya vuruyor?"
+    /// sorusu yerine "bu kareden o taş gibi hareket etsem nereye giderim?"
+    /// diye soruyoruz. At ve şah simetrik olduğu için maske doğrudan işe yarar;
+    /// piyon simetrik olmadığı için KARŞI rengin piyon saldırı maskesi alınır.
+    /// </summary>
     public bool IsSquareAttacked(int sq, int byColor)
+    {
+        int b = Piece.ColorIndex(byColor) * 7;
+
+        if ((Bitboards.PawnAttacks[Piece.ColorIndex(Piece.Opposite(byColor))][sq]
+             & PieceBB[b + Piece.Pawn]) != 0) return true;
+
+        if ((Bitboards.KnightAttacks[sq] & PieceBB[b + Piece.Knight]) != 0) return true;
+        if ((Bitboards.KingAttacks[sq] & PieceBB[b + Piece.King]) != 0) return true;
+
+        ulong queens = PieceBB[b + Piece.Queen];
+        if ((PieceBB[b + Piece.Rook] | queens) != 0
+            && (Bitboards.RookAttacks(sq, Occupied) & (PieceBB[b + Piece.Rook] | queens)) != 0)
+            return true;
+        if ((PieceBB[b + Piece.Bishop] | queens) != 0
+            && (Bitboards.BishopAttacks(sq, Occupied) & (PieceBB[b + Piece.Bishop] | queens)) != 0)
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Eski mailbox sürümü. Artık aramada kullanılmıyor; bitboard sürümünün
+    /// referansı olarak duruyor — ikisi her pozisyonda ve her karede aynı
+    /// cevabı vermek zorunda (attackcheck modu bunu sınıyor).
+    /// </summary>
+    public bool IsSquareAttackedSlow(int sq, int byColor)
     {
         int file = Square.File(sq), rank = Square.Rank(sq);
 

@@ -82,6 +82,14 @@ switch (mode)
         DumpFens(args.Length > 1 && int.TryParse(args[1], out int dn) ? dn : 300);
         break;
 
+    case "bbcheck":
+        BitboardCheck();
+        break;
+
+    case "attackcheck":
+        AttackCheck(args.Length > 1 && int.TryParse(args[1], out int atkd) ? atkd : 3);
+        break;
+
     case "seecheck":
         SeeCheck();
         break;
@@ -614,3 +622,99 @@ void PlayAgainstEngine()
 }
 
 return 0;
+
+// Kayan tas saldirilarinin hizli yolu, yavas referansla birebir ayni mi?
+// Her kare icin rastgele doluluk ornekleri + sinir durumlari deneniyor.
+static void BitboardCheck()
+{
+    Console.WriteLine("=== Bitboard kayan tas dogrulamasi ===");
+    var rng = new Random(20260926);
+    long checks = 0;
+    int bad = 0;
+
+    for (int sq = 0; sq < 64 && bad == 0; sq++)
+    {
+        // Sinir durumlari: bos tahta, tamamen dolu tahta, sadece kendi karesi.
+        var occupancies = new List<ulong> { 0UL, ulong.MaxValue, 1UL << sq };
+        for (int i = 0; i < 4000; i++)
+        {
+            // Seyrek ve yogun doluluklar ayri ayri denenmeli.
+            ulong occ = (ulong)rng.NextInt64();
+            if (i % 3 == 0) occ &= (ulong)rng.NextInt64();
+            if (i % 3 == 1) occ |= (ulong)rng.NextInt64() & (ulong)rng.NextInt64();
+            occupancies.Add(occ);
+        }
+
+        foreach (ulong occ in occupancies)
+        {
+            ulong fastRook = Bitboards.RookAttacks(sq, occ);
+            ulong slowRook = Bitboards.SlowSliderAttacks(sq, occ, diagonal: false);
+            ulong fastBishop = Bitboards.BishopAttacks(sq, occ);
+            ulong slowBishop = Bitboards.SlowSliderAttacks(sq, occ, diagonal: true);
+            checks += 2;
+
+            if (fastRook != slowRook || fastBishop != slowBishop)
+            {
+                Console.WriteLine($"  HATA kare {Square.Name(sq)} doluluk {occ:X16}");
+                Console.WriteLine($"    kale hizli {fastRook:X16} yavas {slowRook:X16}");
+                Console.WriteLine($"    fil  hizli {fastBishop:X16} yavas {slowBishop:X16}");
+                bad++;
+                break;
+            }
+        }
+    }
+
+    Console.WriteLine(bad == 0
+        ? $"\n{checks:N0} saldiri maskesi kontrol edildi. Hepsi birebir ayni."
+        : "\nFARK VAR - hizli yol kullanilamaz.");
+}
+
+// Bitboard saldiri sorgusu, eski mailbox surumuyle her pozisyonda ve
+// her karede ayni cevabi veriyor mu? Perft agacini gezip 64 kare x 2 renk
+// icin ikisini karsilastirir.
+static void AttackCheck(int depth)
+{
+    Console.WriteLine($"=== Saldiri sorgusu dogrulamasi (derinlik {depth}) ===");
+    long positions = 0, comparisons = 0;
+    bool ok = true;
+
+    foreach (var test in Perft.StandardTests)
+    {
+        var board = new Board(test.Fen);
+        bool good = Walk(board, depth, ref positions, ref comparisons);
+        Console.WriteLine($"  {(good ? "OK  " : "HATA")} {test.Name}");
+        if (!good) { ok = false; break; }
+    }
+
+    Console.WriteLine(ok
+        ? $"\n{positions:N0} pozisyon x 128 sorgu = {comparisons:N0} karsilastirma. Hepsi ayni."
+        : "\nFARK VAR.");
+
+    static bool Walk(Board board, int depth, ref long positions, ref long comparisons)
+    {
+        positions++;
+        for (int sq = 0; sq < 64; sq++)
+        {
+            foreach (int color in new[] { Piece.White, Piece.Black })
+            {
+                comparisons++;
+                if (board.IsSquareAttacked(sq, color) != board.IsSquareAttackedSlow(sq, color))
+                {
+                    Console.WriteLine($"    {Square.Name(sq)} / {(color == Piece.White ? "beyaz" : "siyah")}: {board.ToFen()}");
+                    return false;
+                }
+            }
+        }
+
+        if (depth == 0) return true;
+
+        foreach (var move in MoveGenerator.GenerateLegalMoves(board))
+        {
+            var undo = board.MakeMove(move);
+            bool good = Walk(board, depth - 1, ref positions, ref comparisons);
+            board.UnmakeMove(undo);
+            if (!good) return false;
+        }
+        return true;
+    }
+}

@@ -58,6 +58,27 @@ public static class Perft
             Console.WriteLine($"  Piyon anahtarı uyuşmazlığı: {board.ToFen()}");
             return false;
         }
+        if (!board.BitboardsConsistent())
+        {
+            Console.WriteLine($"  Bitboard uyuşmazlığı: {board.ToFen()}");
+            return false;
+        }
+        // Ucuz yasallik testi (IsMoveLegal), pahali referansla (MakeMove +
+        // IsInCheck + UnmakeMove) her hamlede ayni cevabi vermek zorunda.
+        int mover = board.SideToMove;
+        foreach (var candidate in MoveGenerator.GeneratePseudoLegalMoves(board))
+        {
+            bool fast = board.IsMoveLegal(candidate);
+            var probe = board.MakeMove(candidate);
+            bool reference = !board.IsInCheck(mover);
+            board.UnmakeMove(probe);
+            if (fast != reference)
+            {
+                Console.WriteLine($"  Yasallik uyusmazligi: {candidate} / {board.ToFen()}");
+                return false;
+            }
+        }
+
         if (depth == 0) return true;
 
         foreach (var move in MoveGenerator.GenerateLegalMoves(board))
@@ -114,7 +135,7 @@ public static class Perft
                                   $"{(ok ? "OK" : "HATA")}  ({sw.ElapsedMilliseconds} ms)");
             }
 
-            Console.Write("  Zobrist + piyon anahtarı doğrulaması (derinlik 3): ");
+            Console.Write("  Zobrist + piyon anahtarı + bitboard + yasallık doğrulaması (derinlik 3): ");
             Console.WriteLine(VerifyZobrist(new Board(test.Fen), 3) ? "OK" : "HATA");
         }
         return allPassed;

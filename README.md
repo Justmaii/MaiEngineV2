@@ -118,6 +118,54 @@ hızlandı.
 | Hızlandırılmış sürüm | 43,5/60 (%72,5) — 30 G / 27 B / 3 Y |
 | Elo farkı | **+168** |
 
+## Bitboard'lar: kazanç beklenen yerde değildi
+
+8x8 dizi (mailbox) korundu, yanına 64-bit maskeler eklendi: her renk ve her taş
+türü için bir maske, artı doluluk maskesi. Tahtaya yazan **tek** bir fonksiyon
+var (`SetSquare`), bitboard'lar orada güncelleniyor — yani ikisi ayrışamaz, ve
+yine de perft ağacında her düğümde karşılaştırılıyor.
+
+Kayan taş saldırıları "klasik" yöntemle: her kare ve yön için hazır maske,
+doluluk ile kesiştir, ilk engeli bul, arkasını sil.
+
+| Adım | Ölçüm | Sonuç |
+|---|---|---|
+| `IsSquareAttacked` bitboard'a çevrildi | derinlik 16: 2479 → 2456 ms | **~%1, yok sayılır** |
+| Yasallık testi hamleyi oynamadan yapılıyor | derinlik 16: 2479 → 1647 ms | **+114 elo** |
+| Hamle üretimi bitboard'a çevrildi | 60 maç: %50,8 | **+6 elo — ölçülemez, geri alındı** |
+
+**Asıl bulgu ikinci satırda.** Eski kod bir hamlenin legal olup olmadığını
+anlamak için hamleyi gerçekten oynuyordu: `MakeMove` → şah kontrolü →
+`UnmakeMove`. Ama `MakeMove` Zobrist anahtarını, piyon anahtarını, tekrar
+geçmişini ve en pahalısı **NNUE accumulator'ını** da güncelliyor — oysa test
+edilen hamlelerin çoğu hiç oynanmayacak. Yeni `IsMoveLegal` sadece kareleri
+(ve onlara bağlı bitboard'ları) geçici değiştirip soruyor, geri alıyor:
+
+| | önce | sonra |
+|---|---|---|
+| perft (pozisyon 5, derinlik 4) | 809 ms | **126 ms** (6,4x) |
+| bench derinlik 14 | 1144 ms | **725 ms** |
+| 3 saniyede ulaşılan derinlik | 16 | **17** |
+| 60 oyun, 100 ms | — | **39,5/60 (%65,8) → +114 elo** |
+
+Düğüm sayıları birebir aynı kaldı: davranış değişmedi, sadece boşa yapılan iş
+kalktı. Yani bitboard'ların kazancı "maskeler daha hızlı" değil, **"artık
+hamleyi oynamadan yasallığını sorabiliyoruz"** oldu.
+
+Üçüncü satır neden geri alındı: hamle üretimi bitboard'la %6 hızlandı, ama
+üretim sırası değişince hamle sıralamasının eşitlik kırma düzeni bozuldu ve
+arama aynı derinlik için ~%25 daha çok düğüm gezdi. İkisi birbirini götürdü
+(60 maçta %50,8). Kazanç olmadığı ölçüldüğü için karmaşıklık da tutulmadı —
+sıralama üretim sırasından bağımsız hâle getirilirse yeniden denenebilir.
+
+### Bu adımın doğrulamaları
+
+| Test | Ne yapıyor | Sonuç |
+|---|---|---|
+| `bbcheck` | Hızlı kayan taş maskesini yavaş referansla karşılaştırır | **512.384 maske birebir** |
+| `attackcheck` | Bitboard saldırı sorgusunu eski mailbox sürümüyle, 64 kare x 2 renk | **23.800.192 karşılaştırma aynı** |
+| `perft` içinde | Bitboard'lar mailbox ile tutuyor mu + ucuz yasallık testi pahalı referansla aynı mı | her düğümde, 27 test OK |
+
 ## Ağ denemesi: ölçtük, fark yok
 
 Stockfish'in ağ deposundaki 15 ağ bu mimariyle (HalfKP, dosya boyutu tam
