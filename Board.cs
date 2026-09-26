@@ -27,6 +27,9 @@ public class Board
     /// <summary>NNUE ilk katman toplamları. Ağ yüklüyse kurulur, yoksa null.</summary>
     public NnueAccumulator? Nnue;
 
+    /// <summary>Yeni ağın (HalfKAv2_hm) accumulator'ı. İkisinden biri kurulur.</summary>
+    public NnueBigAccumulator? NnueBig;
+
     /// <summary>Sadece PİYONLARIN yerini özetleyen anahtar. Piyon yapısı
     /// değerlendirmesini önbelleğe almak için: piyonlar nadiren oynandığı için
     /// bu anahtar uzun süre sabit kalır ve hesap tekrar tekrar yapılmaz.</summary>
@@ -176,7 +179,12 @@ public class Board
         ZobristKey = Zobrist.Compute(this);
         PawnKey = ComputePawnKey();
 
-        if (NnueNetwork.Shared != null)
+        if (NnueBigNetwork.Shared != null)
+        {
+            NnueBig ??= new NnueBigAccumulator(NnueBigNetwork.Shared);
+            NnueBig.RefreshAll(this);
+        }
+        else if (NnueNetwork.Shared != null)
         {
             Nnue ??= new NnueAccumulator(NnueNetwork.Shared);
             Nnue.RefreshAll(this);
@@ -301,16 +309,17 @@ public class Board
 
         // NNUE: bu hamlenin özellik listesinde ne değiştirdiğini topla.
         var nnueDelta = new NnueMoveDelta { MovedKingColor = Piece.None };
-        bool trackNnue = Nnue != null;
+        bool trackNnue = Nnue != null || NnueBig != null;
         if (trackNnue)
         {
+            // Şah hamlesi de kaydedilir: eski ağ şahları özellik saymadığı için
+            // bu kayıtlar orada işe yaramaz ve atlanır, ama yeni ağda şahlar da
+            // özellik ve ÖTEKİ bakış için bu hareketin işlenmesi gerekir.
             if (Piece.Type(piece) == Piece.King) nnueDelta.MovedKingColor = color;
-            else
-            {
-                nnueDelta.Remove(from, piece);
-                int landing = move.Flag == MoveFlag.Promotion ? move.PromotionType | color : piece;
-                nnueDelta.Add(to, landing);
-            }
+
+            nnueDelta.Remove(from, piece);
+            int landing = move.Flag == MoveFlag.Promotion ? move.PromotionType | color : piece;
+            nnueDelta.Add(to, landing);
 
             if (move.Flag == MoveFlag.EnPassant)
                 nnueDelta.Remove(color == Piece.White ? to - 8 : to + 8,
@@ -402,7 +411,11 @@ public class Board
 
         // Tahta artık yeni durumda; şah tazelemesi doğru kareyi görsün diye
         // accumulator en son güncelleniyor.
-        if (trackNnue) Nnue!.ApplyMove(this, nnueDelta);
+        if (trackNnue)
+        {
+            Nnue?.ApplyMove(this, nnueDelta);
+            NnueBig?.ApplyMove(this, nnueDelta);
+        }
 
         return undo;
     }
@@ -410,6 +423,7 @@ public class Board
     public void UnmakeMove(Undo undo)
     {
         Nnue?.Pop();
+        NnueBig?.Pop();
         PositionHistory.RemoveAt(PositionHistory.Count - 1);
         Move move = undo.Move;
         int from = move.From, to = move.To;
@@ -477,7 +491,9 @@ public class Board
         PositionHistory.Add(ZobristKey);
 
         // Boş hamlede taş kıpırdamaz; yığın dengesi için yine de seviye açılır.
-        if (Nnue != null) Nnue.ApplyMove(this, new NnueMoveDelta { MovedKingColor = Piece.None });
+        var emptyDelta = new NnueMoveDelta { MovedKingColor = Piece.None };
+        Nnue?.ApplyMove(this, emptyDelta);
+        NnueBig?.ApplyMove(this, emptyDelta);
 
         return undo;
     }
@@ -485,6 +501,7 @@ public class Board
     public void UnmakeNullMove(Undo undo)
     {
         Nnue?.Pop();
+        NnueBig?.Pop();
         PositionHistory.RemoveAt(PositionHistory.Count - 1);
         SideToMove = Piece.Opposite(SideToMove);
         CastlingRights = undo.CastlingRights;

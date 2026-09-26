@@ -8,7 +8,18 @@ string mode = args.Length > 0 ? args[0].ToLower() : "test";
 // MAIENGINE_NNUE en onceliklidir: olcum yaparken hangi agin yuklendigi
 // tesadufe birakilamaz. Env degiskeni verildi ama yuklenemediyse
 // sessizce elle yazilmis degerlendirmeye dusmek yerine hata verip cikiyoruz.
-string envNet = Environment.GetEnvironmentVariable("MAIENGINE_NNUE") ?? "";
+// Yeni (HalfKAv2_hm) ag varsa oncelikli.
+string envBigNet = Environment.GetEnvironmentVariable("MAIENGINE_BIGNNUE") ?? "";
+foreach (string candidate in new[] { envBigNet, "nn-big.nnue" })
+{
+    if (candidate.Length > 0 && NnueBigNetwork.TryLoadShared(candidate))
+    {
+        if (mode != "uci") Console.WriteLine($"Yeni NNUE agi yuklendi: {candidate}");
+        break;
+    }
+}
+
+string envNet = NnueBigNetwork.Shared != null ? "" : Environment.GetEnvironmentVariable("MAIENGINE_NNUE") ?? "";
 if (envNet.Length > 0)
 {
     if (!NnueNetwork.TryLoadShared(envNet))
@@ -18,7 +29,7 @@ if (envNet.Length > 0)
     }
     if (mode != "uci") Console.WriteLine($"NNUE agi yuklendi: {envNet}");
 }
-else
+else if (NnueBigNetwork.Shared == null)
 {
     foreach (string candidate in new[] { "nn.nnue", "docs/nn-82215d0fd0df.nnue" })
     {
@@ -113,6 +124,15 @@ switch (mode)
 
     case "pseudocheck":
         PseudoLegalCheck(args.Length > 1 && int.TryParse(args[1], out int pld) ? pld : 3);
+        break;
+
+    case "bigaccverify":
+        BigAccVerify(args.Length > 1 && int.TryParse(args[1], out int bav) ? bav : 4);
+        break;
+
+    case "bignet":
+        BigNetCheck(args.Length > 1 ? args[1] : "/home/claude/nets/nn-ad9b42354671.nnue",
+                    args.Length > 2 ? args[2] : "docs/nnue-ref.txt");
         break;
 
     case "bbcheck":
@@ -1018,6 +1038,101 @@ static void PseudoLegalCheck(int depth)
         {
             var undo = board.MakeMove(move);
             bool good = Walk(board, depth - 1, rng, ref positives, ref negatives);
+            board.UnmakeMove(undo);
+            if (!good) return false;
+        }
+        return true;
+    }
+}
+
+// Yeni (HalfKAv2_hm) agin yuklenmesi ve degerlendirmesi.
+// Referans dosyasi varsa karsilastirir; yoksa birkac pozisyonun degerini basar.
+static void BigNetCheck(string netPath, string refPath)
+{
+    var net = NnueBigNetwork.Load(netPath);
+    Console.WriteLine($"Ag yuklendi: {net.Description}");
+
+    if (!File.Exists(refPath))
+    {
+        foreach (string fen in new[] { Board.StartFen,
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1" })
+        {
+            var board = new Board(fen);
+            Console.WriteLine($"  {net.Evaluate(board),8}  {fen}");
+        }
+        return;
+    }
+
+    int checkedCount = 0, mismatches = 0;
+    foreach (string line in File.ReadAllLines(refPath))
+    {
+        string[] parts = line.Split(';');
+        if (parts.Length < 2) continue;
+        if (!int.TryParse(parts[1].Trim(), out int expected)) continue;
+
+        var board = new Board(parts[0].Trim());
+        int got = net.Evaluate(board);
+        checkedCount++;
+
+        if (got != expected)
+        {
+            if (mismatches < 5)
+                Console.WriteLine($"  FARK: bizde {got}, referans {expected}  —  {parts[0].Trim()}");
+            mismatches++;
+        }
+    }
+
+    Console.WriteLine(mismatches == 0
+        ? $"\n{checkedCount}/{checkedCount} pozisyon BIREBIR ayni."
+        : $"\n{checkedCount - mismatches}/{checkedCount} tutuyor, {mismatches} farkli.");
+}
+
+// Yeni agin artimli accumulator'i, sifirdan hesapla ayni sonucu veriyor mu?
+// Agacin her dugumunde ikisi karsilastirilir.
+static void BigAccVerify(int depth)
+{
+    var net = NnueBigNetwork.Shared;
+    if (net == null) { Console.WriteLine("Yeni ag yuklu degil (MAIENGINE_BIGNNUE)."); return; }
+
+    Console.WriteLine($"=== Yeni ag artimli accumulator dogrulamasi (derinlik {depth}) ===");
+    long nodes = 0;
+    bool ok = true;
+
+    foreach (var test in Perft.StandardTests)
+    {
+        var board = new Board(test.Fen);
+        bool good = Walk(board, net, depth, ref nodes);
+        Console.WriteLine($"  {(good ? "OK  " : "HATA")} {test.Name}");
+        if (!good) { ok = false; break; }
+    }
+
+    Console.WriteLine(ok
+        ? $"\n{nodes:N0} dugum kontrol edildi. Hepsi tutuyor."
+        : "\nFARK VAR.");
+
+    static bool Walk(Board board, NnueBigNetwork net, int depth, ref long nodes)
+    {
+        nodes++;
+
+        int incremental = net.EvaluateAccumulated(
+            board.NnueBig!.White, board.NnueBig.Black,
+            board.NnueBig.WhitePsqt, board.NnueBig.BlackPsqt,
+            board.SideToMove, Bitboards.PopCount(board.Occupied));
+        int scratch = net.Evaluate(board);
+
+        if (incremental != scratch)
+        {
+            Console.WriteLine($"    artimli {incremental} vs sifirdan {scratch} — {board.ToFen()}");
+            return false;
+        }
+
+        if (depth == 0) return true;
+
+        foreach (var move in MoveGenerator.GenerateLegalMoves(board))
+        {
+            var undo = board.MakeMove(move);
+            bool good = Walk(board, net, depth - 1, ref nodes);
             board.UnmakeMove(undo);
             if (!good) return false;
         }

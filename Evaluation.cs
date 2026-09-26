@@ -383,6 +383,17 @@ public static class Evaluation
     public static int Evaluate(Board board)
     {
         // Ağ yüklüyse değerlendirme tamamen ona devredilir.
+        // Yeni ağ yüklüyse o konuşur.
+        var big = NnueBigNetwork.Shared;
+        if (big != null && board.NnueBig != null)
+        {
+            int rawBig = big.EvaluateAccumulated(
+                board.NnueBig.White, board.NnueBig.Black,
+                board.NnueBig.WhitePsqt, board.NnueBig.BlackPsqt,
+                board.SideToMove, Bitboards.PopCount(board.Occupied));
+            return rawBig * 100 / NnueBigNetwork.SfPawnValue + Noise(board.ZobristKey);
+        }
+
         var net = NnueNetwork.Shared;
         if (net != null && board.Nnue != null)
         {

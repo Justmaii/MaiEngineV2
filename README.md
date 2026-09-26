@@ -15,6 +15,18 @@ Stockfish GPLv3. Bu yüzden ayrı repo — v1'in lisansı değişmesin diye.
 
 ## Ağ dosyası depoda değil
 
+Motor `nn-big.nnue` dosyasını çalıştığı klasörde arar (Stockfish 15.1'in ağı,
+47 MB). İndirmek için:
+
+```bash
+curl -L -o nn-big.nnue https://raw.githubusercontent.com/official-stockfish/networks/master/nn-ad9b42354671.nnue
+```
+
+Eski ağ (`nn.nnue`, Stockfish 12'nin HalfKP ağı) hâlâ destekleniyor ve yeni ağ
+yoksa ona düşülür.
+
+### Eski notlar
+
 `nn-82215d0fd0df.nnue` (21 MB) buraya dahil edilmedi. Kendin indir:
 
 ```bash
@@ -169,6 +181,54 @@ devreye giriyor (x-ray), ayrı koda gerek kalmıyor.
 
 Artık varsayılan olarak açık. Doğrulama: `seecompare` eski mailbox sürümüyle
 **1.272.951 alışta** birebir aynı sonucu verdi, `seecheck` 6 birim testi geçiyor.
+
+## Yeni ağ: Stockfish 15.1 mimarisi — +221 elo
+
+v2 ilk çıktığında Stockfish 12'nin ağını kullanıyordu (HalfKP, 256x2, 21 MB).
+Artık Stockfish 15.1'in ağını kullanıyor: **HalfKAv2_hm, 1024x2, 8 katman
+yığını, 47 MB**. Mimari sıfırdan yazıldı; ağ dosyası Stockfish'in.
+
+Eskisinden beş farkı var:
+
+1. **Kral kovaları ve yatay aynalama.** Özellik indeksi artık şahın tam
+   karesini değil, hangi bölgede olduğunu kullanıyor (32 kova), ve şah vezir
+   kanadındaysa tahta yatay aynalanıyor. Böylece ağ simetriyi baştan biliyor,
+   aynı şeyi iki kez öğrenmek zorunda kalmıyor.
+2. **Şahlar da özellik.** HalfKP'de şahlar özellik değildi.
+3. **İkişerli çarpım.** İlk katmanın 1024 çıktısı ikişer çarpılıp 512'ye
+   iniyor. Bu ağa ikinci dereceden bir terim kazandırıyor — tek katmanla
+   ifade edilemeyecek ilişkileri öğrenebiliyor.
+4. **8 katman yığını.** Taş sayısına göre farklı ağırlıklar: açılış ve final
+   aynı ağla değerlendirilmiyor.
+5. **PSQT dalı.** Ağın yanında, doğrudan özelliklerden gelen ayrı bir
+   materyal/konum terimi; sonuç ikisinin toplamı.
+
+### Ölçüm
+
+| | |
+|---|---|
+| 64 oyun, 150 ms, eski ağa karşı | 50,0/64 (%78,1) — 37 G / 26 B / **1 Y** |
+| Elo farkı | **+221** (%95 güven: +156 .. +287) |
+
+Ağ düğüm başına daha pahalı (349 bin düğüm/sn, eskisi 493 bin) ama **aynı
+derinliğe daha az düğümle** ulaşıyor: değerlendirme iyileştikçe arama daha
+isabetli buduyor. Sonuçta derinlik 16'ya eskisinden **hızlı** varıyor
+(1.333 ms vs 1.890 ms).
+
+### Doğrulama
+
+| Test | Sonuç |
+|---|---|
+| `bignet` — 300 pozisyonda Stockfish 15.1'in ham çıktısıyla | **300/300 birebir** |
+| `bigaccverify` — artımlı accumulator vs sıfırdan hesap | **185.939 düğüm** |
+
+Referans değerler, Stockfish 15.1 kaynağına `rawnnue` komutu eklenip ham
+tamsayı değer bastırılarak üretildi — eski ağda kullanılan yöntemin aynısı.
+
+İlk yazımda değerlendirme oynanamayacak kadar yavaştı (72 bin düğüm/sn).
+Ağırlıklar yükleme sırasında `short`'a genişletilip iç çarpımlar
+vektörleştirilince **4,6 kat** hızlandı ve sonuç bit düzeyinde değişmedi
+(300/300 hâlâ birebir).
 
 ## Hız: ölçülebilir kazanç, ölçülemeyen elo
 
