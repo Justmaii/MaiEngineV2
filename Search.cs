@@ -46,6 +46,18 @@ public class Search
     private readonly int[,] _history = new int[64, 64];
 
     /// <summary>
+    /// Her derinlik için ayrılmış hamle ve puan tamponları.
+    ///
+    /// Arama saniyede yüz binlerce düğüm geziyor ve her düğümde hamle üretiyor.
+    /// Bunun için her seferinde yeni dizi ayırmak çöp toplayıcıyı sürekli
+    /// çalıştırır. Bir kez ayrılıp tekrar tekrar kullanılan tampon bunu bitirir.
+    /// Her derinliğin kendi tamponu var çünkü arama özyinelemeli: alt düğüm
+    /// çalışırken üst düğümün hamle listesi hâlâ duruyor olmalı.
+    /// </summary>
+    private readonly Move[][] _moveBuffers;
+    private readonly int[][] _scoreBuffers;
+
+    /// <summary>
     /// Yeni bir iterasyona başlamak için son an (ms). 0 = kapalı, sadece
     /// sert sınır kullanılır. Sert sınır (timeLimitMs) iterasyonu ORTASINDA
     /// keser ve o iterasyonun sonucu atılır; yumuşak sınır o israfı önler.
@@ -64,6 +76,7 @@ public class Search
     /// durum (killer, history, düğüm sayacı) her iş parçacığına özeldir.</summary>
     private Search(TranspositionTable sharedTable, SearchControl control)
     {
+        (_moveBuffers, _scoreBuffers) = CreateBuffers();
         Table = sharedTable;
         Control = control;
         UseOpeningBook = false;
@@ -72,6 +85,7 @@ public class Search
     public Search(int tableSizeMb = 64)
     {
         Table = new TranspositionTable(tableSizeMb);
+        (_moveBuffers, _scoreBuffers) = CreateBuffers();
 
         // Her motor örneği kendi gürültü tohumunu alır: aynı pozisyonda
         // hep aynı hamle yerine oyundan oyuna değişen tercihler.
@@ -86,6 +100,22 @@ public class Search
         string? envSee = Environment.GetEnvironmentVariable("MAIENGINE_SEE");
         if (envSee is "1" or "true") UseSee = true;
         else if (envSee is "0" or "false") UseSee = false;
+    }
+
+    /// <summary>Quiescence kendi derinliğine iner, o yüzden tampon sayısı
+    /// arama derinliğinden fazla olmalı.</summary>
+    private const int MaxBufferPly = MaxPly * 2 + 8;
+
+    private static (Move[][], int[][]) CreateBuffers()
+    {
+        var moves = new Move[MaxBufferPly][];
+        var scores = new int[MaxBufferPly][];
+        for (int i = 0; i < MaxBufferPly; i++)
+        {
+            moves[i] = new Move[MoveGenerator.MaxMoves];
+            scores[i] = new int[MoveGenerator.MaxMoves];
+        }
+        return (moves, scores);
     }
 
     private readonly Stopwatch _timer = new();
@@ -308,7 +338,10 @@ public class Search
     private int Negamax(Board board, int depth, int ply, int alpha, int beta)
     {
         if (_stopped) return 0;
-        if ((NodesSearched & 2047) == 0
+        // Saati 2047 düğümde bir yoklamak, aramanın ilk anlarında (JIT ısınması,
+        // ilk NNUE hesabı) sınırı yüzlerce milisaniye aşmaya yol açıyordu.
+        // 1023'te bir yoklamak daha güvenli ve ölçülebilir bir maliyeti yok.
+        if ((NodesSearched & 1023) == 0
             && (Control.Stop || _timer.ElapsedMilliseconds > _timeLimitMs))
         {
             _stopped = true;
@@ -338,7 +371,7 @@ public class Search
         // bir varyant (ebedî şah) aramayı sonsuza kadar derinleştirebilir.
         if (inCheck && UseAdvancedSearch && ply < MaxPly - 8) depth++;
 
-        if (depth <= 0) return Quiescence(board, alpha, beta);
+        if (depth <= 0) return Quiescence(board, alpha, beta, ply);
 
         // --- Ters futility (static null move) ---
         // Durağan değerlendirme beta'nın bu kadar üstündeyse, rakip bu düğüme
@@ -374,20 +407,16 @@ public class Search
             if (nullScore >= beta) return beta;
         }
 
-        var moves = MoveGenerator.GenerateLegalMoves(board);
-
-        if (moves.Count == 0)
-        {
-            // Şahtaysak mat, değilsek pat.
-            // Mat puanına ply eklenir ki motor "erken mat"ı tercih etsin.
-            return inCheck ? -MateScore + ply : 0;
-        }
+        int slot = Math.Min(ply, MaxBufferPly - 1);
+        Span<Move> moves = _moveBuffers[slot];
+        Span<int> moveScores = _scoreBuffers[slot];
 
         // Sıralama önceliği: kökte önceki iterasyonun en iyisi,
         // derinlerde tablodaki hamle.
-        OrderMoves(board, moves, ply == 0 ? _previousBest : ttMove, ply);
+        var picker = new MovePicker(this, board, ply, ply == 0 ? _previousBest : ttMove,
+                                    moves, moveScores, capturesOnly: false);
 
-        Move bestMove = moves[0];
+        Move bestMove = default;
         int movesSearched = 0;
 
         // --- Futility budaması ---
@@ -401,7 +430,7 @@ public class Search
             futilityPrune = staticEval + 120 * depth <= alpha;
         }
 
-        foreach (var move in moves)
+        while (picker.Next(out Move move))
         {
             bool isQuiet = !IsCapture(board, move) && move.Flag != MoveFlag.Promotion;
 
@@ -470,6 +499,11 @@ public class Search
             }
         }
 
+        // Hiç hamle aranamadıysa oyun bitmiştir: şahtaysak mat, değilsek pat.
+        // Mat puanına ply eklenir ki motor "erken mat"ı tercih etsin.
+        if (movesSearched == 0)
+            return inCheck ? -MateScore + ply : 0;
+
         // alpha hiç aşılmadıysa puan kesin değil, ÜST sınırdır.
         var type = alpha > alphaOriginal ? NodeType.Exact : NodeType.UpperBound;
         Table.Store(board.ZobristKey, depth, ply, alpha, type, bestMove);
@@ -483,7 +517,7 @@ public class Search
     /// motor kendini vezir önde sanır. Bu yüzden derinlik bitse bile ALIŞLAR
     /// bitene kadar bakmaya devam ederiz.
     /// </summary>
-    private int Quiescence(Board board, int alpha, int beta)
+    private int Quiescence(Board board, int alpha, int beta, int ply)
     {
         NodesSearched++;
 
@@ -491,13 +525,15 @@ public class Search
         if (standPat >= beta) return beta;
         if (standPat > alpha) alpha = standPat;
 
-        var captures = MoveGenerator.GenerateLegalMoves(board)
-                                    .Where(m => IsCapture(board, m))
-                                    .ToList();
-        OrderMoves(board, captures, default);
+        // Bütün hamleleri üretip alışları ayıklamak yerine doğrudan alışları
+        // istiyoruz: aramanın düğümlerinin çoğu burada geçiyor.
+        int qSlot = Math.Min(ply, MaxBufferPly - 1);
+        var qPicker = new MovePicker(this, board, -1, default,
+                                     _moveBuffers[qSlot], _scoreBuffers[qSlot], capturesOnly: true);
 
-        foreach (var move in captures)
+        while (qPicker.Next(out Move move))
         {
+
             // --- Delta budaması ---
             // Alınan taşı bedavaya alsak bile alpha'ya yaklaşamıyorsak bu alışa
             // bakmanın anlamı yok. 200 santipiyon pay, pozisyonel sürprizler için.
@@ -520,7 +556,7 @@ public class Search
                 continue;
 
             var undo = board.MakeMove(move);
-            int score = -Quiescence(board, -beta, -alpha);
+            int score = -Quiescence(board, -beta, -alpha, ply + 1);
             board.UnmakeMove(undo);
 
             if (score >= beta) return beta;
@@ -537,14 +573,162 @@ public class Search
         board.Squares[move.To] != Piece.None || move.Flag == MoveFlag.EnPassant;
 
     /// <summary>
+    /// Hamleleri AŞAMA AŞAMA verir, hepsini birden üretmez.
+    ///
+    /// Sebebi basit bir gözlem: alpha-beta düğümlerinin çoğunda ilk birkaç
+    /// hamleden biri kesme yapıyor ve geri kalanına hiç bakılmıyor. Hepsini
+    /// üretip sıralamak, o düğümlerde tamamen boşa harcanan iş demek.
+    ///
+    /// Sıra: tablodaki hamle → alışlar ve terfiler → killer hamleler →
+    /// sessiz hamleler. Sessiz hamleler ancak sıra onlara gelirse üretilir.
+    ///
+    /// Tablodaki hamle üretilmeden denendiği için önce doğrulanması gerekir
+    /// (IsPseudoLegal): tablo çakışabilir ve başka pozisyonun hamlesini
+    /// verebilir.
+    /// </summary>
+    private ref struct MovePicker
+    {
+        private const int StageTt = 0, StageGenCaptures = 1, StageCaptures = 2;
+        private const int StageKiller1 = 3, StageKiller2 = 4;
+        private const int StageGenQuiets = 5, StageQuiets = 6, StageDone = 7;
+
+        private readonly Search _search;
+        private readonly Board _board;
+        private readonly int _ply;
+        private readonly bool _capturesOnly;
+
+        private readonly Move _ttMove;
+        private readonly Move _killer1, _killer2;
+
+        private Span<Move> _moves;
+        private Span<int> _scores;
+        private int _count, _index, _stage;
+
+        public MovePicker(Search search, Board board, int ply, Move ttMove,
+                          Span<Move> moves, Span<int> scores, bool capturesOnly)
+        {
+            _search = search;
+            _board = board;
+            _ply = ply;
+            _capturesOnly = capturesOnly;
+            _ttMove = ttMove;
+            _moves = moves;
+            _scores = scores;
+            _count = 0;
+            _index = 0;
+            _stage = StageTt;
+
+            bool useKillers = search.UseAdvancedSearch && !capturesOnly && ply >= 0 && ply < MaxPly;
+            _killer1 = useKillers ? search._killers[ply, 0] : default;
+            _killer2 = useKillers ? search._killers[ply, 1] : default;
+        }
+
+        /// <summary>Sıradaki hamle. false dönerse hamle kalmadı.</summary>
+        public bool Next(out Move move)
+        {
+            while (true)
+            {
+                switch (_stage)
+                {
+                    case StageTt:
+                        _stage = StageGenCaptures;
+                        if (!_ttMove.IsNull && _board.IsPseudoLegal(_ttMove)
+                            && (!_capturesOnly || IsNoisy(_ttMove))
+                            && _board.IsMoveLegal(_ttMove))
+                        {
+                            move = _ttMove;
+                            return true;
+                        }
+                        continue;
+
+                    case StageGenCaptures:
+                        _count = MoveGenerator.GenerateLegal(_board, _moves, GenType.Captures);
+                        _search.ScoreMoves(_board, _moves, _scores, _count, default, -1);
+                        _index = 0;
+                        _stage = StageCaptures;
+                        continue;
+
+                    case StageCaptures:
+                        while (_index < _count)
+                        {
+                            PickBest(_moves, _scores, _index, _count);
+                            var candidate = _moves[_index++];
+                            if (SameMove(candidate, _ttMove)) continue;
+                            move = candidate;
+                            return true;
+                        }
+                        _stage = _capturesOnly ? StageDone : StageKiller1;
+                        continue;
+
+                    case StageKiller1:
+                        _stage = StageKiller2;
+                        if (TryKiller(_killer1, out move)) return true;
+                        continue;
+
+                    case StageKiller2:
+                        _stage = StageGenQuiets;
+                        if (TryKiller(_killer2, out move)) return true;
+                        continue;
+
+                    case StageGenQuiets:
+                        _count = MoveGenerator.GenerateLegal(_board, _moves, GenType.Quiets);
+                        _search.ScoreMoves(_board, _moves, _scores, _count, default, _ply);
+                        _index = 0;
+                        _stage = StageQuiets;
+                        continue;
+
+                    case StageQuiets:
+                        while (_index < _count)
+                        {
+                            PickBest(_moves, _scores, _index, _count);
+                            var candidate = _moves[_index++];
+                            if (SameMove(candidate, _ttMove)) continue;
+                            if (SameMove(candidate, _killer1) || SameMove(candidate, _killer2)) continue;
+                            move = candidate;
+                            return true;
+                        }
+                        _stage = StageDone;
+                        continue;
+
+                    default:
+                        move = default;
+                        return false;
+                }
+            }
+        }
+
+        private bool TryKiller(Move killer, out Move move)
+        {
+            move = default;
+            if (killer.IsNull || SameMove(killer, _ttMove)) return false;
+            if (!_board.IsPseudoLegal(killer)) return false;
+            if (IsNoisy(killer)) return false;           // alış aşaması zaten verdi
+            if (!_board.IsMoveLegal(killer)) return false;
+
+            move = killer;
+            return true;
+        }
+
+        private bool IsNoisy(Move move) =>
+            _board.Squares[move.To] != Piece.None
+            || move.Flag == MoveFlag.EnPassant
+            || move.Flag == MoveFlag.Promotion;
+    }
+
+    /// <summary>
     /// Hamle sıralaması alpha-beta'nın en önemli parçasıdır: iyi hamleler
     /// önce denenirse çok daha fazla dal kesilir. Aynı arama, 5-10 kat hızlı.
     /// </summary>
-    private void OrderMoves(Board board, List<Move> moves, Move priority, int ply = -1)
+    /// <summary>
+    /// Hamle sıralaması alpha-beta'nın en önemli parçasıdır: iyi hamleler
+    /// önce denenirse çok daha fazla dal kesilir. Aynı arama, 5-10 kat hızlı.
+    ///
+    /// Burada sadece PUANLAMA yapılıyor; sıralama PickBest ile adım adım.
+    /// </summary>
+    private void ScoreMoves(Board board, Span<Move> moves, Span<int> scores, int count,
+                            Move priority, int ply)
     {
-        var scores = new int[moves.Count];
-
-        for (int i = 0; i < moves.Count; i++)
+        for (int i = 0; i < count; i++)
         {
             var move = moves[i];
             int score = 0;
@@ -583,12 +767,20 @@ public class Search
 
             scores[i] = score;
         }
+    }
 
-        var arr = moves.ToArray();
-        Array.Sort(scores, arr);
-        Array.Reverse(arr); // Array.Sort artan sıralar, biz azalan istiyoruz
-        moves.Clear();
-        moves.AddRange(arr);
+    /// <summary>Kalanların en yüksek puanlısını index konumuna taşır.
+    /// Tam sıralama yerine bu: kesme olursa geri kalan hiç sıralanmaz.</summary>
+    private static void PickBest(Span<Move> moves, Span<int> scores, int index, int count)
+    {
+        int best = index;
+        for (int i = index + 1; i < count; i++)
+            if (scores[i] > scores[best]) best = i;
+
+        if (best == index) return;
+
+        (moves[index], moves[best]) = (moves[best], moves[index]);
+        (scores[index], scores[best]) = (scores[best], scores[index]);
     }
 
     public static string FormatScore(int score)

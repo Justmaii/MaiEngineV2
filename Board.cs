@@ -513,6 +513,106 @@ public class Board
 
     /// <summary><paramref name="sq"/> karesi <paramref name="byColor"/> tarafından tehdit ediliyor mu?</summary>
     /// <summary>
+    /// Bu hamle bu pozisyonda üretilebilir bir hamle mi? (Şah açma kontrolü
+    /// YOK — o ayrı, IsMoveLegal'ın işi.)
+    ///
+    /// Neden gerekli: transposition table'dan gelen hamleyi hamle üretmeden
+    /// önce denemek istiyoruz. Ama tablo çakışabilir ve başka bir pozisyonun
+    /// hamlesini verebilir; onu doğrulamadan oynamak tahtayı bozar.
+    /// Bu fonksiyon, hamle listesini üretmeden aynı soruyu cevaplıyor.
+    /// </summary>
+    public bool IsPseudoLegal(Move move)
+    {
+        if (move.IsNull) return false;
+
+        int from = move.From, to = move.To;
+        if ((uint)from > 63 || (uint)to > 63) return false;
+
+        int piece = Squares[from];
+        if (piece == Piece.None || Piece.Color(piece) != SideToMove) return false;
+
+        int target = Squares[to];
+        if (target != Piece.None && Piece.Color(target) == SideToMove) return false;
+
+        int type = Piece.Type(piece);
+        int color = SideToMove;
+        ulong toMask = 1UL << to;
+
+        switch (move.Flag)
+        {
+            case MoveFlag.Castle:
+            {
+                // Rok nadir ve kuralları uzun; üretip karşılaştırmak en güvenlisi.
+                Span<Move> buffer = stackalloc Move[8];
+                int count = 0;
+                CastlingMovesFor(color, buffer, ref count);
+                for (int i = 0; i < count; i++)
+                    if (buffer[i].From == from && buffer[i].To == to) return true;
+                return false;
+            }
+
+            case MoveFlag.EnPassant:
+                return type == Piece.Pawn
+                       && to == EnPassantSquare
+                       && target == Piece.None
+                       && (Bitboards.PawnAttacks[Piece.ColorIndex(color)][from] & toMask) != 0;
+
+            case MoveFlag.DoublePawnPush:
+            {
+                if (type != Piece.Pawn) return false;
+                int step = color == Piece.White ? 8 : -8;
+                int startRank = color == Piece.White ? 1 : 6;
+                return Square.Rank(from) == startRank
+                       && to == from + 2 * step
+                       && Squares[from + step] == Piece.None
+                       && target == Piece.None;
+            }
+
+            case MoveFlag.Promotion:
+            {
+                if (type != Piece.Pawn) return false;
+                int promoRank = color == Piece.White ? 7 : 0;
+                if (Square.Rank(to) != promoRank) return false;
+                if (move.PromotionType is not (Piece.Queen or Piece.Rook or Piece.Bishop or Piece.Knight))
+                    return false;
+                return PawnReaches(from, to, color, target);
+            }
+
+            default:
+            {
+                if (type == Piece.Pawn)
+                {
+                    int promoRank = color == Piece.White ? 7 : 0;
+                    if (Square.Rank(to) == promoRank) return false;   // terfi bayrağı gerekirdi
+                    return PawnReaches(from, to, color, target);
+                }
+
+                ulong attacks = type switch
+                {
+                    Piece.Knight => Bitboards.KnightAttacks[from],
+                    Piece.King => Bitboards.KingAttacks[from],
+                    Piece.Bishop => Bitboards.BishopAttacks(from, Occupied),
+                    Piece.Rook => Bitboards.RookAttacks(from, Occupied),
+                    Piece.Queen => Bitboards.QueenAttacks(from, Occupied),
+                    _ => 0UL
+                };
+                return (attacks & toMask) != 0;
+            }
+        }
+    }
+
+    /// <summary>Piyon tek adım ilerledi mi, yoksa çapraz alış mı yaptı?</summary>
+    private bool PawnReaches(int from, int to, int color, int target)
+    {
+        int step = color == Piece.White ? 8 : -8;
+
+        if (to == from + step) return target == Piece.None;
+
+        return target != Piece.None
+               && (Bitboards.PawnAttacks[Piece.ColorIndex(color)][from] & (1UL << to)) != 0;
+    }
+
+    /// <summary>
     /// Bir pseudo-legal hamle gerçekten legal mi — yani oynayan taraf kendi şahını
     /// açıkta bırakıyor mu?
     ///
@@ -644,6 +744,37 @@ public class Board
             }
         }
         return false;
+    }
+
+    /// <summary>Rok hamlelerini üretir — IsPseudoLegal ve hamle üreteci
+    /// aynı kuralı kullansın diye tek yerde.</summary>
+    internal void CastlingMovesFor(int color, Span<Move> moves, ref int count)
+    {
+        int enemy = Piece.Opposite(color);
+        int kingSq = KingSquare[Piece.ColorIndex(color)];
+        if (kingSq < 0) return;
+
+        int kingSide = color == Piece.White ? Castling.WhiteKingSide : Castling.BlackKingSide;
+        int queenSide = color == Piece.White ? Castling.WhiteQueenSide : Castling.BlackQueenSide;
+        int home = color == Piece.White ? 4 : 60;
+        if (kingSq != home) return;
+        if ((CastlingRights & (kingSide | queenSide)) == 0) return;
+        if (IsSquareAttacked(kingSq, enemy)) return;
+
+        if ((CastlingRights & kingSide) != 0
+            && Squares[home + 1] == Piece.None
+            && Squares[home + 2] == Piece.None
+            && !IsSquareAttacked(home + 1, enemy)
+            && !IsSquareAttacked(home + 2, enemy))
+            moves[count++] = new Move(kingSq, home + 2, MoveFlag.Castle);
+
+        if ((CastlingRights & queenSide) != 0
+            && Squares[home - 1] == Piece.None
+            && Squares[home - 2] == Piece.None
+            && Squares[home - 3] == Piece.None
+            && !IsSquareAttacked(home - 1, enemy)
+            && !IsSquareAttacked(home - 2, enemy))
+            moves[count++] = new Move(kingSq, home - 2, MoveFlag.Castle);
     }
 
     public bool IsInCheck(int color) =>

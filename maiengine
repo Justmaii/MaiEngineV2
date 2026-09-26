@@ -1,0 +1,11 @@
+#!/bin/sh
+# Cute Chess'in tek parca komut istemesi icin sarmalayici.
+# Calisma klasorunu kendi ayarlar, dotnet'i de bulur.
+cd /Users/maiddk/Documents/MaiEngineV2 || exit 1
+for d in /usr/local/share/dotnet/dotnet /opt/homebrew/bin/dotnet "$HOME/.dotnet/dotnet" "$(command -v dotnet 2>/dev/null)"; do
+  if [ -n "$d" ] && [ -x "$d" ]; then
+    exec "$d" bin/Release/net10.0/MaiEngineV2.dll uci
+  fi
+done
+echo "dotnet bulunamadi" >&2
+exit 1

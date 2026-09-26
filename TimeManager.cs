@@ -18,22 +18,28 @@ public static class TimeManager
     /// <param name="movesToGo">Sonraki zaman kontrolüne kalan hamle, yoksa 0.</param>
     public static (int soft, int hard) Allocate(int timeLeft, int increment, int movesToGo)
     {
-        if (timeLeft <= 0) return (50, 100);
+        if (timeLeft <= 0) return (20, 40);
 
-        // Süre kontrolü hamle sayılıysa payı ona göre böl; değilse oyunun
-        // kalanını kabaca 25 hamle say.
-        int divisor = movesToGo > 0 ? Math.Min(movesToGo, 30) : 25;
-        int soft = timeLeft / divisor + increment * 3 / 4;
+        // Arayüze cevabın ulaşması da zaman alıyor; onu baştan ayırıyoruz.
+        int overhead = Math.Clamp(timeLeft / 100, 20, 200);
+        int usable = Math.Max(10, timeLeft - overhead);
 
-        // Hard, soft'un 1,5 katı olabilir ama kalan sürenin dörtte birini
-        // geçmesin: tek bir hamlede saati yakmak, sonraki yirmi hamleyi mahveder.
-        // (3 kat denendi ve 58 oyunda kazanç vermedi — bkz. README.)
-        int hard = Math.Min(soft * 3 / 2, timeLeft / 4);
+        // Süre kontrolü hamle sayılıysa payı ona göre böl. Değilse oyunun
+        // kalanını 30 hamle say: 25 çok hızlı harcıyordu (60 saniyelik oyunda
+        // hamle başına 2,4 sn, yani 20 hamlede saat bitiyor).
+        int divisor = movesToGo > 0 ? Math.Clamp(movesToGo, 2, 30) : 30;
 
-        // Gecikme payı: arayüze cevap ulaşması da zaman alır.
-        int safety = Math.Max(20, timeLeft / 50);
-        hard = Math.Min(hard, Math.Max(10, timeLeft - safety));
-        soft = Math.Min(soft, hard);
+        // Eklemenin tamamını harcamak cazip ama tehlikeli: bir hamle uzun
+        // sürerse fark kapanmıyor. Dörtte üçü alınır.
+        int soft = usable / divisor + increment * 3 / 4;
+
+        // Hiçbir hamle kalan sürenin dörtte birinden fazlasını yemesin.
+        soft = Math.Min(soft, usable / 4);
+
+        // ÖLÇÜM NOTU: sert sınırı yumuşağın 3 katına çıkarıp oynak
+        // pozisyonlarda uzatmayı denedik — 58 oyunda -24 elo, kazanç yok.
+        // O yüzden ikisi eşit: motor ayırdığı payı aşmıyor.
+        int hard = soft;
 
         return (Math.Max(10, soft), Math.Max(15, hard));
     }

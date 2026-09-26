@@ -88,6 +88,12 @@ switch (mode)
                   args.Length > 2 ? args[2] : "docs/nnue-ref.txt");
         break;
 
+    case "openings":
+        MakeOpenings(args.Length > 1 && int.TryParse(args[1], out int oc) ? oc : 60,
+                     args.Length > 2 && int.TryParse(args[2], out int op) ? op : 8,
+                     args.Length > 3 ? args[3] : "openings.epd");
+        break;
+
     case "dumpfens":
         DumpFens(args.Length > 1 && int.TryParse(args[1], out int dn) ? dn : 300);
         break;
@@ -99,6 +105,14 @@ switch (mode)
 
     case "seecompare":
         SeeCompare(args.Length > 1 && int.TryParse(args[1], out int scd) ? scd : 3);
+        break;
+
+    case "nodebench":
+        NodeBench(args.Length > 1 && int.TryParse(args[1], out int nbd) ? nbd : 10);
+        break;
+
+    case "pseudocheck":
+        PseudoLegalCheck(args.Length > 1 && int.TryParse(args[1], out int pld) ? pld : 3);
         break;
 
     case "bbcheck":
@@ -823,6 +837,187 @@ static void SeeCompare(int depth)
         {
             var undo = board.MakeMove(move);
             bool good = Walk(board, depth - 1, ref captures);
+            board.UnmakeMove(undo);
+            if (!good) return false;
+        }
+        return true;
+    }
+}
+
+// Turnuva icin DENGELI acilis seti uretir.
+//
+// Neden gerekli: iki motor da kitapsiz baslarsa her oyun ayni pozisyondan
+// ayni hamlelerle gider — 100 oyun oynarsin, 1 oyunluk bilgi alirsin.
+// Kitap tek tarafa verilirse de olculen sey motor degil kitap olur.
+//
+// Yontem: her yaride, degerlendirmesi en iyiden 60 santipiyondan fazla
+// sapmayan hamleler arasindan rastgele secilir — boylece cesitli ama sacma
+// olmayan acilislar cikar. Sonunda pozisyon kisa bir aramayla olculur ve
+// sadece dengeli olanlar (|puan| <= 30) yazilir.
+static void MakeOpenings(int count, int plies, string path)
+{
+    Console.WriteLine($"=== Dengeli acilis seti ({count} pozisyon, {plies} yarim hamle) ===");
+
+    var rng = new Random(20260927);
+    var seen = new HashSet<string>();
+    var lines = new List<string>();
+    var search = new Search(32) { UseOpeningBook = false };
+    int attempts = 0;
+
+    while (lines.Count < count && attempts < count * 20)
+    {
+        attempts++;
+        var board = new Board();
+        bool ok = true;
+
+        for (int ply = 0; ply < plies && ok; ply++)
+        {
+            var legal = MoveGenerator.GenerateLegalMoves(board);
+            if (legal.Count == 0) { ok = false; break; }
+
+            // Her hamleyi yap, sirasi gelen tarafin gozunden degerlendir.
+            var scored = new List<(Move move, int score)>(legal.Count);
+            foreach (var move in legal)
+            {
+                var undo = board.MakeMove(move);
+                int score = -Evaluation.Evaluate(board);   // hamleyi yapanin gozunden
+                board.UnmakeMove(undo);
+                scored.Add((move, score));
+            }
+
+            int best = scored.Max(x => x.score);
+            var candidates = scored.Where(x => x.score >= best - 60).Select(x => x.move).ToList();
+            board.MakeMove(candidates[rng.Next(candidates.Count)]);
+        }
+
+        if (!ok) continue;
+        if (MoveGenerator.GenerateLegalMoves(board).Count == 0) continue;
+        if (board.IsInCheck(board.SideToMove)) continue;   // sahtayken baslamak adil degil
+
+        string fen = board.ToFen();
+        string key = string.Join(' ', fen.Split(' ')[..4]);
+        if (!seen.Add(key)) continue;
+
+        // Gercekten dengeli mi? Kisa bir arama son sozu soylesin.
+        int verdict = 0;
+        search.Table.Clear();
+        search.FindBestMove(board, maxDepth: 30, timeLimitMs: 200, verbose: false);
+        verdict = search.LastScore;
+        if (Math.Abs(verdict) > 30) continue;
+
+        lines.Add(fen);
+        Console.Write(".");
+        if (lines.Count % 20 == 0) Console.Write($" {lines.Count}\n");
+    }
+
+    File.WriteAllLines(path, lines);
+    Console.WriteLine($"\n{lines.Count} pozisyon yazildi: {path}  ({attempts} deneme)");
+}
+
+// Tek pozisyonda dugum sayisi olcmek yaniltir: siralama degisiklikleri
+// bir pozisyonda iyi, digerinde kotu cikabiliyor. Bu mod sabit derinlikte
+// bir grup pozisyonu arar ve TOPLAM dugum ile sureyi verir.
+static void NodeBench(int depth)
+{
+    string[] positions =
+    {
+        Board.StartFen,
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+        "2r3k1/1p3pp1/p2p3p/3Pn3/1PP1P3/P4P2/6PP/2R3K1 b - - 0 1",
+        "8/8/4k3/8/1p6/8/1P2K3/8 w - - 0 1",
+    };
+
+    long totalNodes = 0, totalMs = 0;
+    Console.WriteLine($"=== Sabit derinlik {depth} ===\n");
+
+    foreach (string fen in positions)
+    {
+        var board = new Board(fen);
+        var search = new Search(64) { UseOpeningBook = false };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        search.FindBestMove(board, maxDepth: depth, timeLimitMs: 120_000, verbose: false);
+        clock.Stop();
+
+        totalNodes += search.NodesSearched;
+        totalMs += clock.ElapsedMilliseconds;
+        Console.WriteLine($"  {search.NodesSearched,12:N0} dugum  {clock.ElapsedMilliseconds,6} ms   {fen[..Math.Min(40, fen.Length)]}");
+    }
+
+    Console.WriteLine($"\nTOPLAM: {totalNodes:N0} dugum, {totalMs:N0} ms, " +
+                      $"{(totalMs > 0 ? totalNodes * 1000 / totalMs : 0):N0} dugum/sn");
+}
+
+// IsPseudoLegal, hamle uretecinin listesiyle ayni seyi mi soyluyor?
+//
+// Iki yonlu test: (1) uretilen her hamle icin true demeli,
+// (2) rastgele uydurulmus hamleler icin listede olup olmamasiyla birebir
+// ayni cevabi vermeli. Ikincisi onemli, cunku tablodan bozuk hamle gelirse
+// tam olarak boyle gorunur.
+static void PseudoLegalCheck(int depth)
+{
+    Console.WriteLine($"=== IsPseudoLegal dogrulamasi (derinlik {depth}) ===");
+    var rng = new Random(20260927);
+    long positives = 0, negatives = 0;
+    bool ok = true;
+
+    foreach (var test in Perft.StandardTests)
+    {
+        var board = new Board(test.Fen);
+        bool good = Walk(board, depth, rng, ref positives, ref negatives);
+        Console.WriteLine($"  {(good ? "OK  " : "HATA")} {test.Name}");
+        if (!good) { ok = false; break; }
+    }
+
+    Console.WriteLine(ok
+        ? $"\n{positives:N0} gercek hamle + {negatives:N0} uydurma hamle denendi. Hepsi dogru."
+        : "\nFARK VAR.");
+
+    static bool Walk(Board board, int depth, Random rng, ref long positives, ref long negatives)
+    {
+        var pseudo = MoveGenerator.GeneratePseudoLegalMoves(board);
+
+        foreach (var move in pseudo)
+        {
+            positives++;
+            if (!board.IsPseudoLegal(move))
+            {
+                Console.WriteLine($"    uretilen hamleye hayir dedi: {move} ({move.Flag}) — {board.ToFen()}");
+                return false;
+            }
+        }
+
+        // Uydurma hamleler: rastgele kare ciftleri ve bayraklar.
+        for (int i = 0; i < 40; i++)
+        {
+            int from = rng.Next(64), to = rng.Next(64);
+            var flag = (MoveFlag)rng.Next(5);
+            int promo = flag == MoveFlag.Promotion
+                ? new[] { Piece.Queen, Piece.Rook, Piece.Bishop, Piece.Knight }[rng.Next(4)]
+                : Piece.None;
+            var fake = new Move(from, to, flag, promo);
+
+            bool inList = pseudo.Any(m => m.From == fake.From && m.To == fake.To
+                                          && m.Flag == fake.Flag && m.PromotionType == fake.PromotionType);
+            bool said = board.IsPseudoLegal(fake);
+            negatives++;
+
+            if (inList != said)
+            {
+                Console.WriteLine($"    {fake} ({flag}): listede={inList} ama IsPseudoLegal={said} — {board.ToFen()}");
+                return false;
+            }
+        }
+
+        if (depth == 0) return true;
+
+        foreach (var move in MoveGenerator.GenerateLegalMoves(board))
+        {
+            var undo = board.MakeMove(move);
+            bool good = Walk(board, depth - 1, rng, ref positives, ref negatives);
             board.UnmakeMove(undo);
             if (!good) return false;
         }

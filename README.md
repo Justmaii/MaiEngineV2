@@ -170,6 +170,49 @@ devreye giriyor (x-ray), ayrı koda gerek kalmıyor.
 Artık varsayılan olarak açık. Doğrulama: `seecompare` eski mailbox sürümüyle
 **1.272.951 alışta** birebir aynı sonucu verdi, `seecheck` 6 birim testi geçiyor.
 
+## Hız: ölçülebilir kazanç, ölçülemeyen elo
+
+Üç değişiklik yapıldı ve hepsi ham hızı artırdı:
+
+1. **Hamle listesi tahsisi kaldırıldı.** Arama saniyede yüz binlerce düğüm
+   geziyordu ve her düğümde yeni `List<Move>` ayırıyordu. Artık her derinliğin
+   önceden ayrılmış tamponu var.
+2. **Quiescence doğrudan alışları istiyor.** Eskiden bütün hamleleri üretip
+   alışları ayıklıyordu. Aramanın düğümlerinin çoğu quiescence'ta geçtiği için
+   bu tek başına ciddi bir israftı.
+3. **Aşamalı hamle üretimi.** Sıra: tablodaki hamle → alışlar ve terfiler →
+   killer hamleler → sessiz hamleler. Sessizler ancak sıra onlara gelirse
+   üretiliyor; düğümlerin çoğunda hiç üretilmiyorlar.
+
+Sekiz pozisyonda sabit derinlik (11) ölçümü:
+
+| | düğüm/sn | toplam süre |
+|---|---|---|
+| önce | 309.000 | 8.516 ms |
+| sonra | **433.000** | **7.431 ms** |
+
+Yani **%40 ham hız, %13 daha kısa sürede aynı derinlik.**
+
+**Ama maç bunu göremedi:** 64 oyunda 32,0/64, yani **0 elo** (%95 güven
+−54..+54). Bu bir çelişki değil, ölçü sınırı: %13 hız kabaca 0,2 ply demek,
+o da 8-10 elo eder — 64 oyunun hata payı ise ±54. Bu büyüklükteki bir farkı
+görmek için birkaç yüz oyun gerekir.
+
+Değişiklik yine de tutuldu: hız ölçüldü ve gerçek, ve daha büyük bir ağa
+geçmenin ön şartı — büyük ağ düğüm başına çok daha pahalı.
+
+### Bu adımın doğrulamaları
+
+| Test | Sonuç |
+|---|---|
+| `pseudocheck` — `IsPseudoLegal` hamle üreteciyle aynı mı | **14,7 milyon kontrol** (7,3M gerçek + 7,4M uydurma hamle) |
+| `perft` içinde — alış + sessiz = hepsi, ne eksik ne fazla | her düğümde |
+| `perft`, `nnuecheck`, `seecheck`, taktik testleri | hepsi geçiyor |
+
+`IsPseudoLegal` gerekliydi çünkü tablodaki hamle artık üretilmeden deneniyor;
+tablo çakışırsa başka pozisyonun hamlesi gelir ve doğrulanmadan oynanırsa
+tahtayı bozar.
+
 ## Lazy SMP: çok çekirdekli arama
 
 Yardımcı iş parçacıkları aynı pozisyonu bağımsız arar. Aralarındaki tek bağ

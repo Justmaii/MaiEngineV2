@@ -63,6 +63,25 @@ public static class Perft
             Console.WriteLine($"  Bitboard uyuşmazlığı: {board.ToFen()}");
             return false;
         }
+        // Alis + sessiz = hepsi olmali; ne eksik ne fazla.
+        {
+            var all = MoveGenerator.GeneratePseudoLegalMoves(board)
+                                   .Select(m => m.ToString() + (int)m.Flag).OrderBy(x => x).ToList();
+            Span<Move> buffer = stackalloc Move[MoveGenerator.MaxMoves];
+            int cc = MoveGenerator.GeneratePseudoLegal(board, buffer, GenType.Captures);
+            var split = new List<string>();
+            for (int i = 0; i < cc; i++) split.Add(buffer[i].ToString() + (int)buffer[i].Flag);
+            int qc = MoveGenerator.GeneratePseudoLegal(board, buffer, GenType.Quiets);
+            for (int i = 0; i < qc; i++) split.Add(buffer[i].ToString() + (int)buffer[i].Flag);
+            split.Sort();
+
+            if (all.Count != split.Count || !all.SequenceEqual(split))
+            {
+                Console.WriteLine($"  Alis/sessiz ayrimi hatali: {board.ToFen()}");
+                return false;
+            }
+        }
+
         // Ucuz yasallik testi (IsMoveLegal), pahali referansla (MakeMove +
         // IsInCheck + UnmakeMove) her hamlede ayni cevabi vermek zorunda.
         int mover = board.SideToMove;
@@ -135,7 +154,7 @@ public static class Perft
                                   $"{(ok ? "OK" : "HATA")}  ({sw.ElapsedMilliseconds} ms)");
             }
 
-            Console.Write("  Zobrist + piyon anahtarı + bitboard + yasallık doğrulaması (derinlik 3): ");
+            Console.Write("  Zobrist + piyon anahtarı + bitboard + yasallık + alış/sessiz ayrımı (derinlik 3): ");
             Console.WriteLine(VerifyZobrist(new Board(test.Fen), 3) ? "OK" : "HATA");
         }
         return allPassed;
