@@ -75,6 +75,10 @@ public class Search
         if (int.TryParse(Environment.GetEnvironmentVariable("MAIENGINE_THREADS"), out int envThreads)
             && envThreads > 0)
             Threads = envThreads;
+
+        string? envSee = Environment.GetEnvironmentVariable("MAIENGINE_SEE");
+        if (envSee is "1" or "true") UseSee = true;
+        else if (envSee is "0" or "false") UseSee = false;
     }
 
     private readonly Stopwatch _timer = new();
@@ -100,11 +104,11 @@ public class Search
     public bool UseSearchV2 = true;
 
     /// <summary>SEE ile kötü alışları budama ve sıralama.
-    /// Varsayilan KAPALI: hesap doğru (seecheck 6/6) ama 150 oyunda kazanç
-    /// vermedi (%49). Muhtemel sebep maliyet — mailbox tahtada SEE her
-    /// çağrıda 64 kareyi kopyalayıp saldıran arıyor. Bitboard'a geçilirse
-    /// çok ucuzlar ve tekrar ölçülmeli.</summary>
-    public bool UseSee = false;
+    /// İlk ölçümde (mailbox SEE) 150 oyunda %49 vermişti — hesap doğruydu
+    /// ama pahalıydı: her çağrıda 64 kare kopyalanıp saldıran yön yön
+    /// aranıyordu. Bitboard sürümüyle 176 oyunda %56,5 = +46 elo
+    /// (%95 güven +13..+79), o yüzden artık varsayılan olarak açık.</summary>
+    public bool UseSee = true;
 
     /// <summary>Son hamle kitaptan mı geldi?</summary>
     public bool LastMoveFromBook { get; private set; }

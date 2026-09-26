@@ -135,6 +135,26 @@ hızlandı.
 | Hızlandırılmış sürüm | 43,5/60 (%72,5) — 30 G / 27 B / 3 Y |
 | Elo farkı | **+168** |
 
+## SEE: pahalıyken zarardı, ucuzlayınca kazanç
+
+SEE (static exchange evaluation) bir alışın, o karede yaşanacak bütün
+alışveriş bittiğinde kaç santipiyon bıraktığını arama yapmadan hesaplar.
+İlk sürümü mailbox tahtayla yazılmıştı: her çağrıda 64 kare kopyalanıyor ve
+saldıran yön yön aranıyordu. 150 oyunda **%49** verdi — hesap doğruydu ama
+maliyeti kazancını yiyordu, o yüzden kapalı bırakılmıştı.
+
+Bitboard sürümü aynı cevabı veriyor, ama tahta kopyalamıyor: doluluk
+maskesinden taş çıktıkça arkasındaki uzun menzilli taş kendiliğinden
+devreye giriyor (x-ray), ayrı koda gerek kalmıyor.
+
+| | |
+|---|---|
+| 176 oyun, 150 ms | 99,5/176 (%56,5) |
+| Elo farkı | **+46** (%95 güven: +13 .. +79) |
+
+Artık varsayılan olarak açık. Doğrulama: `seecompare` eski mailbox sürümüyle
+**1.272.951 alışta** birebir aynı sonucu verdi, `seecheck` 6 birim testi geçiyor.
+
 ## Lazy SMP: çok çekirdekli arama
 
 Yardımcı iş parçacıkları aynı pozisyonu bağımsız arar. Aralarındaki tek bağ

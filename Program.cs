@@ -88,6 +88,10 @@ switch (mode)
                  args.Length > 2 && int.TryParse(args[2], out int smpMs) ? smpMs : 2000);
         break;
 
+    case "seecompare":
+        SeeCompare(args.Length > 1 && int.TryParse(args[1], out int scd) ? scd : 3);
+        break;
+
     case "bbcheck":
         BitboardCheck();
         break;
@@ -763,4 +767,56 @@ static void SmpCheck(int threads, int ms)
     }
 
     Console.WriteLine("\nButun hamleler legal. (Derinlik farki kazanci gosterir, dugum carpani is hacmini.)");
+}
+
+// Bitboard SEE, eski mailbox SEE ile ayni cevabi veriyor mu?
+// Perft agacini gezip her alista ikisini karsilastirir.
+static void SeeCompare(int depth)
+{
+    Console.WriteLine($"=== SEE karsilastirmasi (derinlik {depth}) ===");
+    long captures = 0;
+    bool ok = true;
+
+    foreach (var test in Perft.StandardTests)
+    {
+        var board = new Board(test.Fen);
+        bool good = Walk(board, depth, ref captures);
+        Console.WriteLine($"  {(good ? "OK  " : "HATA")} {test.Name}");
+        if (!good) { ok = false; break; }
+    }
+
+    Console.WriteLine(ok
+        ? $"\n{captures:N0} alis karsilastirildi. Hepsi ayni."
+        : "\nFARK VAR.");
+
+    static bool Walk(Board board, int depth, ref long captures)
+    {
+        foreach (var move in MoveGenerator.GeneratePseudoLegalMoves(board))
+        {
+            bool isCapture = board.Squares[move.To] != Piece.None
+                             || move.Flag == MoveFlag.EnPassant
+                             || move.Flag == MoveFlag.Promotion;
+            if (!isCapture) continue;
+
+            captures++;
+            int fast = See.Evaluate(board, move);
+            int slow = See.EvaluateSlow(board, move);
+            if (fast != slow)
+            {
+                Console.WriteLine($"    {move}: bitboard {fast} vs mailbox {slow} — {board.ToFen()}");
+                return false;
+            }
+        }
+
+        if (depth == 0) return true;
+
+        foreach (var move in MoveGenerator.GenerateLegalMoves(board))
+        {
+            var undo = board.MakeMove(move);
+            bool good = Walk(board, depth - 1, ref captures);
+            board.UnmakeMove(undo);
+            if (!good) return false;
+        }
+        return true;
+    }
 }
