@@ -45,6 +45,23 @@ public class Search
     /// yaptı. Killer'lardan daha genel, daha zayıf bir sinyal.</summary>
     private readonly int[,] _history = new int[64, 64];
 
+    /// <summary>Kaç iş parçacığı? 1 = klasik tek çekirdekli arama.</summary>
+    public int Threads = 1;
+
+    /// <summary>Yardımcı iş parçacıklarına "dur" demenin tek yolu.
+    /// Ana iş parçacığı süresi dolunca burayı işaretler.</summary>
+    internal sealed class SearchControl { public volatile bool Stop; }
+    internal SearchControl Control = new();
+
+    /// <summary>Yardımcı iş parçacıkları için: tablo paylaşılır, geri kalan
+    /// durum (killer, history, düğüm sayacı) her iş parçacığına özeldir.</summary>
+    private Search(TranspositionTable sharedTable, SearchControl control)
+    {
+        Table = sharedTable;
+        Control = control;
+        UseOpeningBook = false;
+    }
+
     public Search(int tableSizeMb = 64)
     {
         Table = new TranspositionTable(tableSizeMb);
@@ -52,6 +69,12 @@ public class Search
         // Her motor örneği kendi gürültü tohumunu alır: aynı pozisyonda
         // hep aynı hamle yerine oyundan oyuna değişen tercihler.
         Evaluation.NoiseSeed = Random.Next();
+
+        // Ölçüm kolaylığı: maç betikleri iş parçacığı sayısını ortam
+        // değişkeniyle verebilsin. UCI'dan gelen "setoption Threads" bunu ezer.
+        if (int.TryParse(Environment.GetEnvironmentVariable("MAIENGINE_THREADS"), out int envThreads)
+            && envThreads > 0)
+            Threads = envThreads;
     }
 
     private readonly Stopwatch _timer = new();
@@ -127,6 +150,70 @@ public class Search
             for (int to = 0; to < 64; to++)
                 _history[from, to] /= 2;
 
+        Control.Stop = false;
+
+        // --- Lazy SMP ---
+        // Yardımcı iş parçacıkları aynı pozisyonu bağımsız arar; aralarındaki
+        // tek bağ paylaşılan transposition table. Biri bir dalı çözdüğünde
+        // sonucu tabloya yazar, diğerleri o dalı ucuza geçer. Kimse kimseye
+        // iş dağıtmaz — "lazy" adı buradan geliyor: basit, ve ölçülebilir.
+        var helpers = new List<Task>();
+        var helperEngines = new List<Search>();
+
+        if (Threads > 1)
+        {
+            string fen = board.ToFen();
+            var history = board.PositionHistory.ToArray();
+
+            for (int i = 1; i < Threads; i++)
+            {
+                // Her yardımcının KENDİ tahtası olmalı: MakeMove tahtayı değiştirir,
+                // ve NNUE accumulator'ı tahtaya bağlı.
+                var copy = new Board(fen);
+                copy.PositionHistory.Clear();
+                copy.PositionHistory.AddRange(history);
+
+                var helper = new Search(Table, Control)
+                {
+                    UseAdvancedSearch = UseAdvancedSearch,
+                    UseAdvancedEval = UseAdvancedEval,
+                    UseSearchV2 = UseSearchV2,
+                    UseSee = UseSee,
+                    Random = new Random(Random.Next())
+                };
+                helperEngines.Add(helper);
+                helpers.Add(Task.Run(() => helper.RunIterativeDeepening(copy, maxDepth, verbose: false)));
+            }
+        }
+
+        RunIterativeDeepening(board, maxDepth, verbose);
+
+        // Ana iş parçacığı bitti: yardımcılar da dursun ve toplansın.
+        Control.Stop = true;
+        if (helpers.Count > 0)
+        {
+            Task.WaitAll(helpers.ToArray());
+            foreach (var helper in helperEngines) NodesSearched += helper.NodesSearched;
+        }
+
+        return _bestMoveOverall;
+    }
+
+    /// <summary>
+    /// Iterative deepening döngüsü. Hem ana iş parçacığı hem yardımcılar
+    /// aynı döngüyü çalıştırır; yardımcılar sadece ekrana bir şey yazmaz
+    /// ve sonuçları Control.Stop ile kesilir.
+    /// </summary>
+    private void RunIterativeDeepening(Board board, int maxDepth, bool verbose)
+    {
+        _stopped = false;
+        _timer.Restart();
+        if (_timeLimitMs == 0) _timeLimitMs = int.MaxValue;   // yardımcıyı süre değil, ana iş parçacığı durdurur
+
+        var legal = MoveGenerator.GenerateLegalMoves(board);
+        if (legal.Count == 0) return;
+        if (_bestMoveOverall.IsNull) _bestMoveOverall = legal[0];
+
         // Iterative deepening: önce 1 derinlik, sonra 2, 3...
         // Kulağa israf gibi gelir ama sığ aramanın sonucu derin aramanın
         // hamle sıralamasını iyileştirir ve net kazanç sağlar.
@@ -186,13 +273,13 @@ public class Search
             if (Math.Abs(score) > MateScore - 100) break;
         }
 
-        return _bestMoveOverall;
     }
 
     private int Negamax(Board board, int depth, int ply, int alpha, int beta)
     {
         if (_stopped) return 0;
-        if ((NodesSearched & 2047) == 0 && _timer.ElapsedMilliseconds > _timeLimitMs)
+        if ((NodesSearched & 2047) == 0
+            && (Control.Stop || _timer.ElapsedMilliseconds > _timeLimitMs))
         {
             _stopped = true;
             return 0;

@@ -16,6 +16,7 @@ public class Uci
 
     private int _hashMb = 64;
     private bool _ownBook = true;
+    private int _threads = 1;
     private string _bookFile = "Book/book.bin";
 
     private Board _board = new();
@@ -50,7 +51,7 @@ public class Uci
                     // verdiği belleği bize vermez — koşullar eşitsiz kalır.
                     Console.WriteLine($"option name Hash type spin default {_hashMb} min 1 max 4096");
                     Console.WriteLine($"option name OwnBook type check default {(_ownBook ? "true" : "false")}");
-                    Console.WriteLine("option name Threads type spin default 1 min 1 max 1");
+                    Console.WriteLine($"option name Threads type spin default {_threads} min 1 max 64");
                     Console.WriteLine("option name Clear Hash type button");
                     Console.WriteLine($"option name BookFile type string default {_bookFile}");
                     Console.WriteLine("uciok");
@@ -134,10 +135,13 @@ public class Uci
                 break;
 
             case "threads":
-                // Motor tek iş parçacıklı. Sessizce yutmak yerine söylüyoruz,
-                // çünkü arayüz 4 thread verdiğini sanıp sonucu yanlış okuyabilir.
-                if (int.TryParse(value, out int threads) && threads != 1)
-                    Console.WriteLine("info string Threads desteklenmiyor, 1 kullaniliyor");
+                // Lazy SMP: yardımcı iş parçacıkları aynı pozisyonu arar ve
+                // paylaşılan transposition table üzerinden birbirine yardım eder.
+                if (int.TryParse(value, out int threads))
+                {
+                    _threads = Math.Clamp(threads, 1, 64);
+                    _search.Threads = _threads;
+                }
                 break;
         }
     }

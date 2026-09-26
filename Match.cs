@@ -73,8 +73,10 @@ public static class Match
     /// Kendi motorumuzu dışarıdaki bir UCI motoruna karşı oynatır.
     /// options: "UCI_LimitStrength=true,UCI_Elo=1800" gibi.
     /// </summary>
+    /// <param name="firstGame">Tohum numarasi kaydan baslasin. Uzun maclari
+    /// parca parca calistirirken ayni oyunlari tekrar oynamamak icin.</param>
     public static void RunAgainstUci(string enginePath, int games, int moveTimeMs,
-                                     string options = "", int maxPlies = 200)
+                                     string options = "", int maxPlies = 200, int firstGame = 0)
     {
         using var opponent = new ExternalEngine(enginePath);
 
@@ -90,8 +92,9 @@ public static class Match
                           (options.Length > 0 ? $"  [{options}]" : ""));
         Console.WriteLine($"{games} oyun, hamle başına {moveTimeMs} ms\n");
 
-        for (int game = 0; game < games; game++)
+        for (int index = 0; index < games; index++)
         {
+            int game = firstGame + index;
             bool weAreWhite = game % 2 == 0;
             int result = PlayAgainstUci(opponent, weAreWhite, moveTimeMs, maxPlies, seed: game);
 
@@ -100,7 +103,8 @@ public static class Match
             else losses++;
 
             Console.Write(result == 0 ? "=" : ((result > 0) == weAreWhite ? "1" : "0"));
-            if ((game + 1) % 10 == 0) Console.Write(" ");
+            if ((index + 1) % 10 == 0) Console.Write(" ");
+            Console.Out.Flush();
         }
 
         double points = wins + draws / 2.0;

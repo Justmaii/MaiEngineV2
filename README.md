@@ -72,7 +72,24 @@ dotnet run -c Release uci        # UCI modu
 dotnet run -c Release bench      # derinlik ölçümü
 ```
 
-## Sonuç: v1'e karşı +117 elo
+## Sonuç: v1'e karşı +206 elo
+
+64 oyun, hamle başına 150 ms, iki tarafta da açılış kitabı kapalı:
+
+| | |
+|---|---|
+| v1 (elle yazılmış değerlendirme) | 15,0/64 (%23,4) |
+| **v2 (bugünkü hâli)** | **49,0/64 (%76,6)** |
+| Elo farkı | **+206** (%95 güven: +130 .. +281) |
+| v2 için G/B/Y | 39 / 20 / 5 |
+
+Bu sayı doğrudan ölçüldü. Gün içinde ölçülen tek tek kazançlar (+117 NNUE,
++168 accumulator hızı, +114 yasallık testi, +83 lazy SMP) farklı rakiplere
+karşı alındığı için **toplanamaz**; v1'e karşı gerçek fark yukarıdaki tek
+maçtan gelir.
+
+## İlk NNUE ölçümü: +117 elo
+
 
 40 oyun, hamle başına 200 ms, iki tarafta da açılış kitabı kapalı:
 
@@ -117,6 +134,41 @@ hızlandı.
 |---|---|
 | Hızlandırılmış sürüm | 43,5/60 (%72,5) — 30 G / 27 B / 3 Y |
 | Elo farkı | **+168** |
+
+## Lazy SMP: çok çekirdekli arama
+
+Yardımcı iş parçacıkları aynı pozisyonu bağımsız arar. Aralarındaki tek bağ
+paylaşılan transposition table: biri bir dalı çözünce sonucu tabloya yazar,
+diğerleri o dalı ucuza geçer. Kimse kimseye iş dağıtmaz — "lazy" adı buradan.
+
+Bunun için transposition table kilitsiz hale getirildi. Kayıt artık iki
+64-bit alan: paketlenmiş veri ve *anahtar XOR veri*. Bir okuyucu yarı yazılmış
+bir kaydı görürse XOR tutmaz ve kayıt yokmuş sayılır — kilit maliyeti olmadan
+bozuk kayıt kullanma ihtimali sıfır. Yan etki olarak kayıt 40 bayttan 16 bayta
+indi, yani aynı bellekte 2,5 kat daha çok pozisyon tutuluyor.
+
+| | |
+|---|---|
+| 2 iş parçacığı, 64 oyun | 39,5/64 (%61,7) |
+| Elo farkı | **+83** (%95 güven: +24 .. +142) |
+| Gezilen düğüm | ~1,8x |
+
+Ölçüm iki çekirdekli bir makinede yapıldı: sıra kimdeyse sadece o taraf
+düşündüğü için iki iş parçacıklı taraf iki çekirdeği, tek iş parçacıklı taraf
+bir çekirdeği kullandı — yani ölçülen şey tam olarak "aynı sürede iki çekirdek,
+bir çekirdeğe karşı". Daha çok çekirdekte kazancın artması beklenir ama bu
+ölçülmedi, iddia edilmiyor.
+
+Varsayılan hâlâ tek iş parçacığı; turnuva arayüzü `setoption name Threads`
+ile ayarlar.
+
+### Doğrulama
+
+Yarış koşulu sessizdir: bozuk bir kayıt yanlış hamle ürettirir ve bu maçta
+"kötü oynadı" gibi görünür. O yüzden `smp` modu her pozisyonda dönen hamlenin
+gerçekten legal olduğunu kontrol ediyor, ve 64 oyunluk maç boyunca (yaklaşık
+5.000 hamle, iki iş parçacığı) tek bir legal olmayan hamle ya da çökme olmadı.
+Tek iş parçacıklı düğüm sayıları değişiklikten önce ve sonra birebir aynı.
 
 ## Bitboard'lar: kazanç beklenen yerde değildi
 

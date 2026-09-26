@@ -50,7 +50,8 @@ switch (mode)
             args[1],
             games: args.Length > 2 && int.TryParse(args[2], out int mg) ? mg : 20,
             moveTimeMs: args.Length > 3 && int.TryParse(args[3], out int mt) ? mt : 200,
-            options: args.Length > 4 ? args[4] : "");
+            options: args.Length > 4 ? args[4] : "",
+            firstGame: args.Length > 5 && int.TryParse(args[5], out int fg) ? fg : 0);
         break;
 
     // Polyglot anahtar dogrulamasi + kitap denemesi
@@ -80,6 +81,11 @@ switch (mode)
 
     case "dumpfens":
         DumpFens(args.Length > 1 && int.TryParse(args[1], out int dn) ? dn : 300);
+        break;
+
+    case "smp":
+        SmpCheck(args.Length > 1 && int.TryParse(args[1], out int smpT) ? smpT : 2,
+                 args.Length > 2 && int.TryParse(args[2], out int smpMs) ? smpMs : 2000);
         break;
 
     case "bbcheck":
@@ -717,4 +723,44 @@ static void AttackCheck(int depth)
         }
         return true;
     }
+}
+
+// Cok is parcacikli arama: cokmuyor mu, legal hamle donuyor mu, ve
+// tek is parcacigina gore ne kadar derine iniyor?
+static void SmpCheck(int threads, int ms)
+{
+    Console.WriteLine($"=== Lazy SMP kontrolu ({threads} is parcacigi, {ms} ms) ===");
+    Console.WriteLine($"Makinede {Environment.ProcessorCount} mantiksal cekirdek var.\n");
+
+    Console.WriteLine($"{"Pozisyon",-14} {"tek iş parçacığı",26}   |  {"çok iş parçacığı",26}");
+    Console.WriteLine($"{"",-14} {"derinlik",9} {"düğüm",12}      |  {"derinlik",9} {"düğüm",12}");
+
+    foreach (var test in Perft.StandardTests)
+    {
+        var results = new (int depth, long nodes, Move move)[2];
+
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int useThreads = pass == 0 ? 1 : threads;
+            var board = new Board(test.Fen);
+            var search = new Search(64) { UseOpeningBook = false, Threads = useThreads };
+            var move = search.FindBestMove(board, maxDepth: 40, timeLimitMs: ms, verbose: false);
+
+            // Donen hamle gercekten legal mi? Yaris kosulu bozuk hamle uretirse
+            // en hizli burada yakalanir.
+            bool legal = MoveGenerator.GenerateLegalMoves(board).Any(m => m.ToString() == move.ToString());
+            if (!legal)
+            {
+                Console.WriteLine($"  HATA: legal olmayan hamle {move} — {test.Fen}");
+                return;
+            }
+            results[pass] = (search.DepthReached, search.NodesSearched, move);
+        }
+
+        Console.WriteLine($"{test.Name,-14} {results[0].depth,9} {results[0].nodes,12}   |  " +
+                          $"{results[1].depth,9} {results[1].nodes,12}   " +
+                          $"x{(double)results[1].nodes / Math.Max(1, results[0].nodes):0.00} dugum");
+    }
+
+    Console.WriteLine("\nButun hamleler legal. (Derinlik farki kazanci gosterir, dugum carpani is hacmini.)");
 }

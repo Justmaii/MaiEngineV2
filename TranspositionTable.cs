@@ -1,3 +1,5 @@
+using System.Threading;
+
 namespace ChessEngine;
 
 public enum NodeType : byte
@@ -10,13 +12,17 @@ public enum NodeType : byte
     UpperBound
 }
 
+/// <summary>
+/// Kayıt iki 64-bit alandan ibaret: paketlenmiş veri ve "anahtar XOR veri".
+/// Sebebi çok iş parçacıklı arama: kilit kullanmadan yazıyoruz, yani bir okuyucu
+/// yarı yazılmış bir kaydı görebilir. XOR eşleşmesi bunu yakalar — yarım kayıtta
+/// anahtar tutmaz ve kayıt yokmuş gibi davranılır. Stockfish de aynı numarayı
+/// kullanır; kilitten çok daha ucuz ve yanlış kayıt kullanma ihtimali sıfır.
+/// </summary>
 public struct TranspositionEntry
 {
-    public ulong Key;
-    public int Score;
-    public int Depth;
-    public NodeType Type;
-    public Move BestMove;
+    public ulong KeyXorData;
+    public ulong Data;
 }
 
 /// <summary>
@@ -38,6 +44,43 @@ public class TranspositionTable
     /// <summary>Tablonun şu anki boyutu (MB).</summary>
     public int SizeMb { get; private set; }
 
+    // ---- Paketleme düzeni (48 bit kullanılıyor) ----
+    //  0..19  puan + 524288        (20 bit)
+    // 20..27  derinlik + 64        ( 8 bit)
+    // 28..29  düğüm türü           ( 2 bit)
+    // 30..35  hamle: kalkış karesi ( 6 bit)
+    // 36..41  hamle: varış karesi  ( 6 bit)
+    // 42..44  hamle: bayrak        ( 3 bit)
+    // 45..47  terfi taşı türü      ( 3 bit)
+    private const int ScoreBias = 524288;
+    private const int DepthBias = 64;
+
+    private static ulong Pack(int score, int depth, NodeType type, Move move)
+    {
+        // 20 bit puan, 8 bit derinlik: gerçek arama bu sınırların çok altında
+        // kalır, ama sessizce yanlış sayı saklamaktansa kırpmak daha güvenli.
+        score = Math.Clamp(score, -ScoreBias + 1, ScoreBias - 1);
+        depth = Math.Clamp(depth, -DepthBias, 191 - DepthBias);
+
+        return (ulong)(uint)(score + ScoreBias)
+        | ((ulong)(uint)(depth + DepthBias) << 20)
+        | ((ulong)(byte)type << 28)
+        | ((ulong)(uint)move.From << 30)
+        | ((ulong)(uint)move.To << 36)
+        | ((ulong)(uint)(int)move.Flag << 42)
+        | ((ulong)(uint)move.PromotionType << 45);
+    }
+
+    private static int UnpackScore(ulong data) => (int)(data & 0xFFFFF) - ScoreBias;
+    private static int UnpackDepth(ulong data) => (int)((data >> 20) & 0xFF) - DepthBias;
+    private static NodeType UnpackType(ulong data) => (NodeType)((data >> 28) & 0x3);
+
+    private static Move UnpackMove(ulong data) => new(
+        (int)((data >> 30) & 0x3F),
+        (int)((data >> 36) & 0x3F),
+        (MoveFlag)((data >> 42) & 0x7),
+        (int)((data >> 45) & 0x7));
+
     /// <param name="sizeMb">Tablo boyutu (MB). 64 MB makul bir başlangıç.</param>
     public TranspositionTable(int sizeMb = 64)
     {
@@ -53,7 +96,7 @@ public class TranspositionTable
     {
         sizeMb = Math.Clamp(sizeMb, 1, 4096);
 
-        int entrySize = System.Runtime.InteropServices.Marshal.SizeOf<TranspositionEntry>();
+        const int entrySize = 16;   // iki ulong
         long count = (long)sizeMb * 1024 * 1024 / entrySize;
 
         // İndeksleme "key & mask" ile yapılacağı için boyut 2'nin kuvveti olmalı.
@@ -88,16 +131,17 @@ public class TranspositionTable
         bestMove = default;
         score = 0;
 
-        if (entry.Key != key) return false;
+        ulong data = Volatile.Read(ref entry.Data);
+        if ((Volatile.Read(ref entry.KeyXorData) ^ data) != key) return false;
 
         // Hamle sıralaması için kayıtlı hamle derinlik yetersiz olsa da işe yarar.
-        bestMove = entry.BestMove;
+        bestMove = UnpackMove(data);
 
-        if (entry.Depth < depth) return false;
+        if (UnpackDepth(data) < depth) return false;
 
-        int stored = FromTableScore(entry.Score, ply);
+        int stored = FromTableScore(UnpackScore(data), ply);
 
-        bool usable = entry.Type switch
+        bool usable = UnpackType(data) switch
         {
             NodeType.Exact => true,
             NodeType.LowerBound => stored >= beta,
@@ -117,13 +161,12 @@ public class TranspositionTable
         ref TranspositionEntry entry = ref _entries[key & _mask];
 
         // Derin arama sığ olanı ezer; aynı pozisyonun yeni sonucu da yazılır.
-        if (entry.Key == key && entry.Depth > depth) return;
+        ulong old = Volatile.Read(ref entry.Data);
+        if ((Volatile.Read(ref entry.KeyXorData) ^ old) == key && UnpackDepth(old) > depth) return;
 
-        entry.Key = key;
-        entry.Score = ToTableScore(score, ply);
-        entry.Depth = depth;
-        entry.Type = type;
-        entry.BestMove = bestMove;
+        ulong data = Pack(ToTableScore(score, ply), depth, type, bestMove);
+        entry.Data = data;
+        Volatile.Write(ref entry.KeyXorData, key ^ data);
         Stores++;
     }
 
