@@ -1131,6 +1131,11 @@ static void BigAccVerify(int depth)
             return false;
         }
 
+        return WalkChildren(board, net, depth, ref nodes);
+    }
+
+    static bool WalkChildren(Board board, NnueBigNetwork net, int depth, ref long nodes)
+    {
         if (depth == 0) return true;
 
         foreach (var move in MoveGenerator.GenerateLegalMoves(board))

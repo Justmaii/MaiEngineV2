@@ -362,6 +362,31 @@ Bir motoru "Stockfish'i N elo'ya kilitleyip" ölçmek yaygın ama yanıltıcı.
 Stockfish, sınırsız Stockfish'ten 470 elo zayıf. Yani o ayarlardaki sayılar
 rakibin gerçek gücü değildir.
 
+## Tembel accumulator: denendi, kazanç vermedi
+
+Her hamlede 1024 değer x 2 bakış kopyalanıyor. Stockfish bunu tembelleştirir:
+hamle yapıldığında sadece "bu hamle şunları değiştirdi" notu alınır, toplamlar
+ancak değerlendirme istendiğinde hesaplanır. Aramanın budadığı dallarda o iş
+hiç yapılmaz.
+
+Yazıldı, doğrulandı (**7.037.881 düğüm**, değerlendirme kasten seyrekleştirilip
+hesaplanmamış seviyelerden zincir oluşturularak), ve ölçüldü:
+
+| | derinlik 16'ya süre |
+|---|---|
+| Tembel | 1.134 ms |
+| Hevesli (mevcut) | **1.076 ms** |
+
+Kazanç yok, hatta muhasebe maliyeti yüzünden hafif eksi. **Geri alındı.**
+
+Sebebi ilginç: tembelliğin atlayacağı iş, aramanın *değerlendirmeden*
+yaptığı hamleler. Ama o hamlelerin ana kaynağını daha önce zaten ortadan
+kaldırmıştık — yasallık testi artık hamleyi oynamıyor. Geriye neredeyse
+hiçbir şey kalmamış: yapılan her hamlenin ardından zaten değerlendirme
+geliyor.
+
+Yani bir optimizasyon, başka bir optimizasyonun değerini sıfırlamış.
+
 ## int8 komutları: değerlendirme 2,25 kat hızlandı
 
 NNUE'de girdi de ağırlık da tek bayt, ve işlemcilerde tam bu iş için komutlar
