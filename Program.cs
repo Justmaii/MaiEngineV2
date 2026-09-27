@@ -105,6 +105,12 @@ switch (mode)
                      args.Length > 3 ? args[3] : "openings.epd");
         break;
 
+    case "openings2":
+        MakeSearchOpenings(args.Length > 1 && int.TryParse(args[1], out int so) ? so : 200,
+                           args.Length > 2 && int.TryParse(args[2], out int sp) ? sp : 8,
+                           args.Length > 3 ? args[3] : "openings2.epd");
+        break;
+
     case "dumpfens":
         DumpFens(args.Length > 1 && int.TryParse(args[1], out int dn) ? dn : 300);
         break;
@@ -117,6 +123,48 @@ switch (mode)
     case "seecompare":
         SeeCompare(args.Length > 1 && int.TryParse(args[1], out int scd) ? scd : 3);
         break;
+
+    case "gccheck":
+    {
+        var rnd = new Random(5); long n = 0, bad = 0;
+        foreach (var f in File.ReadAllLines(File.Exists("/home/claude/openings2.epd") ? "/home/claude/openings2.epd" : "openings2.epd"))
+        {
+            var bd = new Board(f);
+            for (int step = 0; step < 80; step++)
+            {
+                var ms = MoveGenerator.GenerateLegalMoves(bd);
+                if (ms.Count == 0) break;
+                foreach (var m in ms)
+                {
+                    bool fast = Search.GivesCheck(bd, m);
+                    var u = bd.MakeMove(m);
+                    bool slow = bd.IsInCheck(bd.SideToMove);
+                    bd.UnmakeMove(u);
+                    n++;
+                    if (fast != slow && m.Flag != MoveFlag.Castle) { bad++; if (bad < 5) Console.WriteLine($"{bd.ToFen()} {m} fast={fast} slow={slow}"); }
+                }
+                bd.MakeMove(ms[rnd.Next(ms.Count)]);
+            }
+        }
+        Console.WriteLine($"{n} hamle, {bad} uyumsuz");
+        break;
+    }
+
+    case "fhbench":
+    {
+        int fd = args.Length > 1 && int.TryParse(args[1], out int fdd) ? fdd : 10;
+        var fens = File.ReadAllLines(File.Exists("/home/claude/openings2.epd") ? "/home/claude/openings2.epd" : "openings2.epd").Take(40).ToArray();
+        long nodes = 0; var sw = System.Diagnostics.Stopwatch.StartNew();
+        foreach (var f in fens)
+        {
+            var sb = new Search(64) { UseOpeningBook = false };
+            sb.FindBestMove(new Board(f), maxDepth: fd, timeLimitMs: 600_000, verbose: false);
+            nodes += sb.NodesSearched;
+        }
+        Console.WriteLine($"derinlik {fd}: {nodes:N0} dugum, {sw.ElapsedMilliseconds} ms, " +
+            $"ilk hamlede kesme %{100.0 * Search.FailHighFirst / Math.Max(1, Search.FailHigh):0.0} ({Search.FailHigh:N0})");
+        break;
+    }
 
     case "nodebench":
         NodeBench(args.Length > 1 && int.TryParse(args[1], out int nbd) ? nbd : 10);
@@ -1173,4 +1221,66 @@ static void DotBench()
 
     Console.WriteLine($"{rounds:N0} degerlendirme / {clock.ElapsedMilliseconds} ms = " +
                       $"{rounds * 1000L / Math.Max(1, clock.ElapsedMilliseconds):N0} degerlendirme/sn  (sink {sink})");
+}
+
+// Arama ile uretilmis acilis seti.
+//
+// Ilk surumde hamleler statik degerlendirmeye gore secildigi icin "dengeli ama
+// garip" pozisyonlar cikiyordu (siyah ...Ra7, beyaz c3-g3-h4 gibi). Burada her
+// aday hamle kisa bir aramayla puanlaniyor ve en iyiye 25 santipiyon yakin
+// olanlar arasindan secim yapiliyor — ortaya gercek acilislara benzeyen
+// pozisyonlar cikiyor. Sonunda yine dengesi olculup |puan| <= 40 olanlar kaliyor.
+static void MakeSearchOpenings(int count, int plies, string path)
+{
+    Console.WriteLine($"=== Arama ile acilis seti ({count} pozisyon, {plies} yarim hamle) ===");
+    var rng = new Random(20260927);
+    var seen = new HashSet<string>();
+    var lines = new List<string>();
+    var search = new Search(16) { UseOpeningBook = false };
+    int attempts = 0;
+
+    while (lines.Count < count && attempts < count * 10)
+    {
+        attempts++;
+        var board = new Board();
+        bool ok = true;
+
+        for (int ply = 0; ply < plies && ok; ply++)
+        {
+            var legal = MoveGenerator.GenerateLegalMoves(board);
+            if (legal.Count == 0) { ok = false; break; }
+
+            var scored = new List<(Move move, int score)>();
+            foreach (var move in legal)
+            {
+                var undo = board.MakeMove(move);
+                search.Table.Clear();
+                search.FindBestMove(board, maxDepth: 3, timeLimitMs: 200, verbose: false);
+                int score = -search.LastScore;          // hamleyi yapanin gozunden
+                board.UnmakeMove(undo);
+                scored.Add((move, score));
+            }
+
+            int best = scored.Max(x => x.score);
+            var candidates = scored.Where(x => x.score >= best - 25).Select(x => x.move).ToList();
+            board.MakeMove(candidates[rng.Next(candidates.Count)]);
+        }
+
+        if (!ok || board.IsInCheck(board.SideToMove)) continue;
+        if (MoveGenerator.GenerateLegalMoves(board).Count == 0) continue;
+
+        string fen = board.ToFen();
+        string key = string.Join(' ', fen.Split(' ')[..4]);
+        if (!seen.Add(key)) continue;
+
+        search.Table.Clear();
+        search.FindBestMove(board, maxDepth: 30, timeLimitMs: 300, verbose: false);
+        if (Math.Abs(search.LastScore) > 40) continue;
+
+        lines.Add(fen);
+        if (lines.Count % 20 == 0) Console.WriteLine($"  {lines.Count} ({attempts} deneme)");
+    }
+
+    File.WriteAllLines(path, lines);
+    Console.WriteLine($"{lines.Count} pozisyon yazildi: {path}");
 }

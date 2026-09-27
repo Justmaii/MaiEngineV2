@@ -55,8 +55,9 @@ public class TranspositionTable
     private const int ScoreBias = 524288;
     private const int DepthBias = 64;
 
-    private static ulong Pack(int score, int depth, NodeType type, Move move)
+    private static ulong Pack(int score, int depth, NodeType type, Move move, int eval = short.MinValue)
     {
+        eval = Math.Clamp(eval, short.MinValue, short.MaxValue);
         // 20 bit puan, 8 bit derinlik: gerçek arama bu sınırların çok altında
         // kalır, ama sessizce yanlış sayı saklamaktansa kırpmak daha güvenli.
         score = Math.Clamp(score, -ScoreBias + 1, ScoreBias - 1);
@@ -68,7 +69,8 @@ public class TranspositionTable
         | ((ulong)(uint)move.From << 30)
         | ((ulong)(uint)move.To << 36)
         | ((ulong)(uint)(int)move.Flag << 42)
-        | ((ulong)(uint)move.PromotionType << 45);
+        | ((ulong)(uint)move.PromotionType << 45)
+        | ((ulong)(ushort)(short)eval << 48);
     }
 
     private static int UnpackScore(ulong data) => (int)(data & 0xFFFFF) - ScoreBias;
@@ -171,7 +173,36 @@ public class TranspositionTable
         return true;
     }
 
-    public void Store(ulong key, int depth, int ply, int score, NodeType type, Move bestMove)
+    /// <summary>Ham okuma: kayıt varsa derinliği, türü ve puanı ne olursa olsun
+    /// döndürür. Kesme kararını arama verir (PV düğümlerinde kesme yapılmaz,
+    /// singular extension kaydın türüne ve derinliğine bakar).</summary>
+    /// <summary>Kayıttaki durağan değerlendirme (48..63. bitler). Yoksa short.MinValue.
+    /// Ağ değerlendirmesi pahalı; aynı pozisyona tekrar gelindiğinde yeniden hesaplanmaz.</summary>
+    public static int UnpackEval(ulong data) => (short)(ushort)(data >> 48);
+
+    public bool Probe(ulong key, int ply, out int score, out int depth, out NodeType type, out Move move)
+        => Probe(key, ply, out score, out depth, out type, out move, out _);
+
+    public bool Probe(ulong key, int ply, out int score, out int depth, out NodeType type, out Move move, out int eval)
+    {
+        ref TranspositionEntry entry = ref _entries[key & _mask];
+        ulong data = Volatile.Read(ref entry.Data);
+        if ((Volatile.Read(ref entry.KeyXorData) ^ data) != key || (data == 0 && entry.KeyXorData == 0))
+        {
+            score = 0; depth = -DepthBias; type = NodeType.UpperBound; move = default;
+            eval = short.MinValue;
+            return false;
+        }
+        eval = UnpackEval(data);
+        move = UnpackMove(data);
+        depth = UnpackDepth(data);
+        type = UnpackType(data);
+        score = FromTableScore(UnpackScore(data), ply);
+        return true;
+    }
+
+    public void Store(ulong key, int depth, int ply, int score, NodeType type, Move bestMove,
+                      int eval = short.MinValue)
     {
         ref TranspositionEntry entry = ref _entries[key & _mask];
 
@@ -179,7 +210,7 @@ public class TranspositionTable
         ulong old = Volatile.Read(ref entry.Data);
         if ((Volatile.Read(ref entry.KeyXorData) ^ old) == key && UnpackDepth(old) > depth) return;
 
-        ulong data = Pack(ToTableScore(score, ply), depth, type, bestMove);
+        ulong data = Pack(ToTableScore(score, ply), depth, type, bestMove, eval);
         entry.Data = data;
         Volatile.Write(ref entry.KeyXorData, key ^ data);
         Stores++;

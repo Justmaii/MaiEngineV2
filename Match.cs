@@ -87,6 +87,13 @@ public static class Match
         }
         opponent.IsReady();
 
+        // Acilis seti: her pozisyon iki kez oynanir (bir kez her renkle), boylece
+        // bir acilisin bir tarafa yaramasi sonucu bozmaz.
+        string? openingPath = Environment.GetEnvironmentVariable("MAIENGINE_OPENINGS");
+        string[] openings = openingPath != null && File.Exists(openingPath)
+            ? File.ReadAllLines(openingPath).Where(l => l.Trim().Length > 0).ToArray()
+            : Array.Empty<string>();
+
         int wins = 0, losses = 0, draws = 0;
         Console.WriteLine($"MaiEngine  vs  {opponent.Name}" +
                           (options.Length > 0 ? $"  [{options}]" : ""));
@@ -96,7 +103,8 @@ public static class Match
         {
             int game = firstGame + index;
             bool weAreWhite = game % 2 == 0;
-            int result = PlayAgainstUci(opponent, weAreWhite, moveTimeMs, maxPlies, seed: game);
+            string? startFen = openings.Length > 0 ? openings[(game / 2) % openings.Length].Trim() : null;
+            int result = PlayAgainstUci(opponent, weAreWhite, moveTimeMs, maxPlies, seed: game, startFen);
 
             if (result == 0) draws++;
             else if ((result > 0) == weAreWhite) wins++;
@@ -115,10 +123,13 @@ public static class Match
     }
 
     private static int PlayAgainstUci(ExternalEngine opponent, bool weAreWhite,
-                                      int moveTimeMs, int maxPlies, int seed)
+                                      int moveTimeMs, int maxPlies, int seed, string? startFen = null)
     {
-        var board = new Board();
-        var ours = new Search(32) { Random = new Random(seed) };
+        var board = startFen == null ? new Board() : new Board(startFen);
+
+        // Kitap KAPALI: rakip de kitapsiz oynuyor (OwnBook=false). Bu satır eskiden
+        // eksikti ve test edilen taraf ilk hamlelerde gömülü kitaptan oynuyordu.
+        var ours = new Search(32) { Random = new Random(seed), UseOpeningBook = false };
         var playedMoves = new List<string>();
         opponent.NewGame();
 
@@ -138,7 +149,7 @@ public static class Match
             }
             else
             {
-                string? text = opponent.Think(playedMoves, moveTimeMs);
+                string? text = opponent.Think(playedMoves, moveTimeMs, startFen);
                 if (text == null) return 0;
                 move = Uci.ParseMove(board, text);
 

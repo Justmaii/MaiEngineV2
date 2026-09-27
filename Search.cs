@@ -252,9 +252,6 @@ public class Search
         // Killer'lar derinliğe bağlı olduğu için yeni aramada geçersiz; sıfırla.
         // History daha genel bir sinyal, tamamen atmak yerine yarıya indiriyoruz.
         Array.Clear(_killers);
-        for (int from = 0; from < 64; from++)
-            for (int to = 0; to < 64; to++)
-                _history[from, to] /= 2;
 
         Control.Stop = false;
 
@@ -400,167 +397,412 @@ public class Search
 
     }
 
-    private int Negamax(Board board, int depth, int ply, int alpha, int beta)
+    // ================================================================
+    //  Arama v3 — modern budama ve uzatmalar
+    // ================================================================
+    //
+    // Her parça ortam değişkeniyle kapatılabilir (MAIENGINE_OFF=nmp,rfp,...),
+    // böylece bir özelliğin katkısı tek tek ölçülebiliyor.
+    private static readonly HashSet<string> Off = new(
+        (Environment.GetEnvironmentVariable("MAIENGINE_OFF") ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    private static readonly bool UseRfp = !Off.Contains("rfp");
+    private static readonly bool UseRazor = !Off.Contains("razor");
+    private static readonly bool UseNmp = !Off.Contains("nmp");
+    private static readonly bool UseProbCut = !Off.Contains("probcut");
+    private static readonly bool UseIir = !Off.Contains("iir");
+    private static readonly bool UseSingular = !Off.Contains("se");
+    private static readonly bool UseLmp = !Off.Contains("lmp");
+    private static readonly bool UseFutility = !Off.Contains("fut");
+    private static readonly bool UseHistPrune = !Off.Contains("hp");
+    private static readonly bool UseSeePrune = !Off.Contains("seep");
+    private static readonly bool UseCont = !Off.Contains("cont");
+    private static readonly bool UseLmrV3 = !Off.Contains("lmr");
+    private static readonly bool UseQsTt = !Off.Contains("qstt");
+    private static readonly bool OldNmp = Off.Contains("nmpnew");
+    private static readonly bool OldRfp = Off.Contains("rfpnew");
+    private static readonly bool UseQsEvasion = !Off.Contains("qsevade");
+    private static readonly bool PvTtCut = Off.Contains("pvttguard");
+    private static readonly bool UseTtEval = !Off.Contains("tteval");
+    private static readonly bool UseMdp = !Off.Contains("mdp");
+
+    private const int NoEval = int.MinValue / 4;
+    private const int HistMax = 16384;
+    private const int PieceSlots = 12 * 64;
+
+    // Arama yığını: her ply için yapılan hamle, oynayan taş, durağan puan.
+    private readonly int[] _evalStack = new int[MaxBufferPly + 4];
+    private readonly Move[] _moveStack = new Move[MaxBufferPly + 4];
+    private readonly int[] _pieceStack = new int[MaxBufferPly + 4];
+    private readonly Move[] _excluded = new Move[MaxBufferPly + 4];
+
+    // History artık tarafa göre ayrı: beyazın g1-f3'ü ile siyahınki aynı şey değil.
+    private readonly int[] _mainHist = new int[2 * 64 * 64];
+    // Devam history'si: "bir önceki hamle X iken Y iyi miydi?" [önceki taş,kare][taş,kare]
+    private readonly int[] _contHist = new int[PieceSlots * PieceSlots];
+    // Karşı hamle: rakibin son hamlesine en son hangi cevap kesme yaptı.
+    private readonly Move[] _counterMoves = new Move[PieceSlots];
+
+    private int _timeCheck = 1024;
+
+    /// <summary>Sıralama kalitesi ölçüsü: beta kesmelerinin kaçı ilk hamlede geldi.</summary>
+    public static long FailHigh, FailHighFirst;
+
+    /// <summary>Hamle şah çekiyor mu? Tahtada oynamadan, bitboard ile.
+    /// Budamalar şah çeken hamleleri atlamamalı: mat çoğu zaman sessiz bir
+    /// şahla gelir ve "kötü görünen" o hamle budanırsa mat görünmez.</summary>
+    internal static bool GivesCheck(Board board, Move move)
+    {
+        int us = board.SideToMove, them = Piece.Opposite(us);
+        int ksq = board.KingSquare[Piece.ColorIndex(them)];
+        if (move.Flag == MoveFlag.Castle) return true;   // nadir; temkinli ol
+        int piece = board.Squares[move.From];
+        int type = move.Flag == MoveFlag.Promotion ? move.PromotionType : Piece.Type(piece);
+        ulong occ = (board.Occupied & ~(1UL << move.From)) | (1UL << move.To);
+        if (move.Flag == MoveFlag.EnPassant)
+            occ &= ~(1UL << (us == Piece.White ? move.To - 8 : move.To + 8));
+        ulong kbit = 1UL << ksq;
+        int to = move.To;
+        bool direct = type switch
+        {
+            Piece.Pawn => (Bitboards.PawnAttacks[Piece.ColorIndex(us)][to] & kbit) != 0,
+            Piece.Knight => (Bitboards.KnightAttacks[to] & kbit) != 0,
+            Piece.Bishop => (Bitboards.BishopAttacks(to, occ) & kbit) != 0,
+            Piece.Rook => (Bitboards.RookAttacks(to, occ) & kbit) != 0,
+            Piece.Queen => (Bitboards.QueenAttacks(to, occ) & kbit) != 0,
+            _ => false
+        };
+        if (direct) return true;
+        // Açarak şah: kalkış karesi boşalınca arkadaki kale/fil/vezir şaha değiyor mu?
+        ulong fromMask = ~(1UL << move.From);
+        ulong bq = (board.PiecesOf(us, Piece.Bishop) | board.PiecesOf(us, Piece.Queen)) & fromMask;
+        ulong rq = (board.PiecesOf(us, Piece.Rook) | board.PiecesOf(us, Piece.Queen)) & fromMask;
+        return (Bitboards.BishopAttacks(ksq, occ) & bq) != 0 || (Bitboards.RookAttacks(ksq, occ) & rq) != 0;
+    }
+
+    private static int PieceIndex(int piece) =>
+        (Piece.Color(piece) == Piece.White ? 0 : 6) + Piece.Type(piece) - 1;
+
+    private static void Gravity(ref int entry, int bonus)
+    {
+        bonus = Math.Clamp(bonus, -HistMax, HistMax);
+        entry += bonus - entry * Math.Abs(bonus) / HistMax;
+    }
+
+    private static int HistoryBonus(int depth) => Math.Min(170 * depth - 100, 1600);
+
+    private int QuietHistory(Board board, Move move, int ply)
+    {
+        int color = board.SideToMove == Piece.White ? 0 : 1;
+        int h = _mainHist[(color * 64 + move.From) * 64 + move.To];
+        if (!UseCont || ply < 1) return h;
+        int cur = PieceIndex(board.Squares[move.From]) * 64 + move.To;
+        if (_pieceStack[ply - 1] >= 0)
+            h += _contHist[(_pieceStack[ply - 1] * 64 + _moveStack[ply - 1].To) * PieceSlots + cur];
+        if (ply >= 2 && _pieceStack[ply - 2] >= 0)
+            h += _contHist[(_pieceStack[ply - 2] * 64 + _moveStack[ply - 2].To) * PieceSlots + cur];
+        return h;
+    }
+
+    private void UpdateQuietHistory(Board board, Move move, int ply, int bonus)
+    {
+        int color = board.SideToMove == Piece.White ? 0 : 1;
+        Gravity(ref _mainHist[(color * 64 + move.From) * 64 + move.To], bonus);
+        if (!UseCont || ply < 1) return;
+        int cur = PieceIndex(board.Squares[move.From]) * 64 + move.To;
+        if (_pieceStack[ply - 1] >= 0)
+            Gravity(ref _contHist[(_pieceStack[ply - 1] * 64 + _moveStack[ply - 1].To) * PieceSlots + cur], bonus);
+        if (ply >= 2 && _pieceStack[ply - 2] >= 0)
+            Gravity(ref _contHist[(_pieceStack[ply - 2] * 64 + _moveStack[ply - 2].To) * PieceSlots + cur], bonus);
+    }
+
+    private Move CounterMoveAt(int ply) =>
+        ply >= 1 && _pieceStack[ply - 1] >= 0
+            ? _counterMoves[_pieceStack[ply - 1] * 64 + _moveStack[ply - 1].To]
+            : default;
+
+    private int Negamax(Board board, int depth, int ply, int alpha, int beta, bool cutNode = false)
     {
         if (_stopped) return 0;
-        // Saati 2047 düğümde bir yoklamak, aramanın ilk anlarında (JIT ısınması,
-        // ilk NNUE hesabı) sınırı yüzlerce milisaniye aşmaya yol açıyordu.
-        // 1023'te bir yoklamak daha güvenli ve ölçülebilir bir maliyeti yok.
-        if ((NodesSearched & 1023) == 0
-            && (Control.Stop || _timer.ElapsedMilliseconds > _timeLimitMs))
+        if (--_timeCheck <= 0)
         {
-            _stopped = true;
-            return 0;
+            _timeCheck = 1024;
+            if (Control.Stop || _timer.ElapsedMilliseconds > _timeLimitMs)
+            {
+                _stopped = true;
+                return 0;
+            }
         }
-        NodesSearched++;
-        if (ply > SelDepth) SelDepth = ply;
+
+        bool isPvNode = beta - alpha > 1;
+        bool root = ply == 0;
         if (ply < MaxPly) _pvLength[ply] = ply;
 
-        // Beraberlikler: kökte değilse hemen 0 dön, aramaya gerek yok.
-        if (ply > 0 && (board.IsRepetition() || board.HalfmoveClock >= 100)) return 0;
-
-        // Tabloda bu pozisyon var mı?
-        int alphaOriginal = alpha;
-        Move ttMove = default;
-        if (ply > 0 && Table.TryProbe(board.ZobristKey, depth, ply, alpha, beta,
-                                      out int ttScore, out ttMove))
-        {
-            return ttScore;
-        }
+        if (!root && (board.IsRepetition() || board.HalfmoveClock >= 100)) return 0;
 
         bool inCheck = board.IsInCheck(board.SideToMove);
 
-        // --- İçsel iterasyon azaltması (IIR) ---
-        // Tabloda hamle yoksa sıralama kör demektir; bu düğümü tam derinlikte
-        // aramak pahalı ve muhtemelen israf. Bir ply azaltıp aramak, hem ucuz
-        // hem de tabloya bir hamle yazdırıyor — bir sonraki gelişte sıralama
-        // artık kör olmuyor.
-        bool isPvNode = beta - alpha > 1;
-        if (InternalReduction && ttMove.IsNull && !isPvNode && depth >= 6 && !inCheck) depth--;
-
-        // Şah uzatması: şahtayken durmak tehlikelidir, pozisyon "sessiz" değildir.
-        // Bir derinlik daha bakarak şahın nasıl çözüldüğünü görürüz.
-        //
-        // ply sınırı şart: uzatma derinliği azaltmadığı için sürekli şah veren
-        // bir varyant (ebedî şah) aramayı sonsuza kadar derinleştirebilir.
+        // Şah uzatması (derinlik bitmeden önce: şahtayken yaprağa inilmez).
         if (inCheck && UseAdvancedSearch && ply < MaxPly - 8) depth++;
-
         if (depth <= 0) return Quiescence(board, alpha, beta, ply);
 
-        // --- Ters futility (static null move) ---
-        // Durağan değerlendirme beta'nın bu kadar üstündeyse, rakip bu düğüme
-        // izin vermeyecek kadar kötü durumda demektir; aramaya gerek yok.
-        // Sadece sığ derinlikte ve PV dışı düğümlerde güvenli.
-        int staticEval = 0;
-        bool haveStaticEval = false;
+        NodesSearched++;
+        if (ply > SelDepth) SelDepth = ply;
 
-        if (UseSearchV2 && !inCheck && !isPvNode && depth <= 6
-            && Math.Abs(beta) < MateScore - 1000)
+        if (!root)
         {
-            staticEval = Evaluation.Evaluate(board);
-            haveStaticEval = true;
-            if (staticEval - 85 * depth >= beta) return beta;
+            if (ply >= MaxPly - 2) return inCheck ? 0 : Evaluation.Evaluate(board);
+
+            // Mat mesafesi budaması: daha kısa bir mat zaten bulunduysa
+            // bu daldan daha iyisi çıkamaz.
+            if (UseMdp)
+            {
+                alpha = Math.Max(alpha, -MateScore + ply);
+                beta = Math.Min(beta, MateScore - ply - 1);
+                if (alpha >= beta) return alpha;
+            }
         }
 
-        // --- Null-move budaması ---
-        // Fikir: "rakibe bedava bir hamle versem bile pozisyonum hâlâ beta'nın
-        // üstündeyse, gerçek hamlemle kesin üstündedir" — o zaman bu dalı
-        // ucuza (azaltılmış derinlikte) kesebiliriz.
-        // Şartlar: şahta olmamak, PV düğümü olmamak, ve TAŞ SAHİBİ OLMAK —
-        // sadece piyonu kalan tarafta zugzwang olur, yani hamle yapmak zarardır
-        // ve varsayım ters teper.
-        if (UseAdvancedSearch && !inCheck && depth >= 3 && ply > 0 && beta - alpha == 1
-            && board.HasNonPawnMaterial(board.SideToMove))
-        {
-            int reduction = 2 + depth / 6;
-            var nullUndo = board.MakeNullMove();
-            int nullScore = -Negamax(board, depth - 1 - reduction, ply + 1, -beta, -beta + 1);
-            board.UnmakeNullMove(nullUndo);
+        int alphaOriginal = alpha;
+        Move excluded = _excluded[ply];
+        bool hasExcluded = !excluded.IsNull;
+        ulong key = board.ZobristKey;
 
-            if (_stopped) return 0;
-            if (nullScore >= beta) return beta;
+        bool ttHit = false;
+        int ttScore = 0, ttDepth = -100;
+        NodeType ttType = NodeType.UpperBound;
+        Move ttMove = default;
+        int ttEval = short.MinValue;
+        if (!hasExcluded)
+            ttHit = Table.Probe(key, ply, out ttScore, out ttDepth, out ttType, out ttMove, out ttEval);
+
+        // PV dışı düğümde yeterince derin kayıt varsa sonucu doğrudan kullan.
+        if ((!isPvNode || (PvTtCut && !root)) && ttHit && ttDepth >= depth
+            && (ttType == NodeType.Exact
+                || (ttType == NodeType.LowerBound && ttScore >= beta)
+                || (ttType == NodeType.UpperBound && ttScore <= alpha)))
+        {
+            return ttType == NodeType.LowerBound ? beta
+                 : ttType == NodeType.UpperBound ? alpha
+                 : Math.Clamp(ttScore, alpha, beta);
         }
+        if (root && !_previousBest.IsNull) ttMove = _previousBest;
+
+        // --- Durağan değerlendirme ve "improving" ---
+        int staticEval, eval;
+        if (inCheck)
+        {
+            staticEval = eval = NoEval;
+            _evalStack[ply] = NoEval;
+        }
+        else
+        {
+            staticEval = hasExcluded ? _evalStack[ply]
+                       : UseTtEval && ttHit && ttEval != short.MinValue ? ttEval
+                       : Evaluation.Evaluate(board);
+            eval = staticEval;
+            // Tablodaki puan sınır olarak durağan puandan daha bilgili.
+            if (ttHit && Math.Abs(ttScore) < MateScore - 1000
+                && (ttType == NodeType.Exact
+                    || (ttType == NodeType.LowerBound && ttScore > eval)
+                    || (ttType == NodeType.UpperBound && ttScore < eval)))
+                eval = ttScore;
+            _evalStack[ply] = staticEval;
+        }
+
+        // improving: iki ply önceki (aynı taraf) durumumuzdan iyi miyiz?
+        // İyileşiyorsak budamalar daha temkinli, kötüleşiyorsak daha cesur.
+        bool improving = false;
+        if (!inCheck)
+        {
+            if (ply >= 2 && _evalStack[ply - 2] != NoEval) improving = staticEval > _evalStack[ply - 2];
+            else if (ply >= 4 && _evalStack[ply - 4] != NoEval) improving = staticEval > _evalStack[ply - 4];
+            else improving = true;
+        }
+
+        if (!isPvNode && !inCheck && !hasExcluded && UseAdvancedSearch)
+        {
+            // --- Ters futility ---
+            if (OldRfp)
+            {
+                if (depth <= 6 && Math.Abs(beta) < MateScore - 1000 && staticEval - 85 * depth >= beta)
+                    return beta;
+            }
+            else if (UseRfp && depth <= 8 && Math.Abs(beta) < MateScore - 1000
+                && eval - 80 * (depth - (improving ? 1 : 0)) >= beta)
+                return beta;
+
+            // --- Razoring: umutsuz görünen düğümü sessizlik aramasıyla doğrula ---
+            if (UseRazor && depth <= 3 && eval + 250 * depth + 100 < alpha)
+            {
+                int razor = Quiescence(board, alpha, alpha + 1, ply);
+                if (razor <= alpha) return alpha;
+            }
+
+            // --- Null move ---
+            if (UseNmp && depth >= 3 && (OldNmp || eval >= beta) && !root
+                && _pieceStack[ply - 1] >= 0            // üst üste iki null yok
+                && board.HasNonPawnMaterial(board.SideToMove))
+            {
+                int r = OldNmp ? 3 + depth / 6 : 3 + depth / 3 + Math.Min((eval - beta) / 200, 3);
+                _moveStack[ply] = default;
+                _pieceStack[ply] = -1;
+                var nullUndo = board.MakeNullMove();
+                int nullScore = -Negamax(board, depth - r, ply + 1, -beta, -beta + 1, !cutNode);
+                board.UnmakeNullMove(nullUndo);
+                if (_stopped) return 0;
+                if (nullScore >= beta) return beta;
+            }
+
+            // --- ProbCut ---
+            // İyi bir alış, sığ aramada beta'nın epey üstünü veriyorsa tam
+            // derinlikte de büyük ihtimalle beta'yı geçer: dalı kes.
+            int probBeta = beta + 200;
+            if (UseProbCut && depth >= 5 && Math.Abs(beta) < MateScore - 1000
+                && !(ttHit && ttDepth >= depth - 3 && ttScore < probBeta))
+            {
+                int pSlot = Math.Min(ply, MaxBufferPly - 1);
+                var pPicker = new MovePicker(this, board, -1, ttMove,
+                                             _moveBuffers[pSlot], _scoreBuffers[pSlot], capturesOnly: true);
+                while (pPicker.Next(out Move pm))
+                {
+                    if (staticEval + See.Evaluate(board, pm) < probBeta) continue;
+                    _moveStack[ply] = pm;
+                    _pieceStack[ply] = PieceIndex(board.Squares[pm.From]);
+                    var pu = board.MakeMove(pm);
+                    int v = -Quiescence(board, -probBeta, -probBeta + 1, ply + 1);
+                    if (v >= probBeta)
+                        v = -Negamax(board, depth - 4, ply + 1, -probBeta, -probBeta + 1, !cutNode);
+                    board.UnmakeMove(pu);
+                    if (_stopped) return 0;
+                    if (v >= probBeta)
+                    {
+                        Table.Store(key, depth - 3, ply, v, NodeType.LowerBound, pm, staticEval);
+                        return beta;
+                    }
+                }
+            }
+        }
+
+        // --- IIR: tabloda hamle yoksa bir ply sığ ara ---
+        if (UseIir && depth >= 4 && ttMove.IsNull && !hasExcluded && (isPvNode || cutNode)) depth--;
 
         int slot = Math.Min(ply, MaxBufferPly - 1);
-        Span<Move> moves = _moveBuffers[slot];
-        Span<int> moveScores = _scoreBuffers[slot];
+        var picker = new MovePicker(this, board, ply, ttMove,
+                                    _moveBuffers[slot], _scoreBuffers[slot], capturesOnly: false);
 
-        // Sıralama önceliği: kökte önceki iterasyonun en iyisi,
-        // derinlerde tablodaki hamle.
-        var picker = new MovePicker(this, board, ply, ply == 0 ? _previousBest : ttMove,
-                                    moves, moveScores, capturesOnly: false);
-
+        Span<Move> quietsTried = stackalloc Move[64];
+        int quietCount = 0;
+        bool skipQuiets = false;
         Move bestMove = default;
         int movesSearched = 0;
-
-        // --- Futility budaması ---
-        // Sığ derinlikte, durağan puan alpha'nın epey altındaysa sessiz hamleler
-        // pozisyonu kurtarmaya yetmez; sadece alış ve terfilere bakarız.
-        bool futilityPrune = false;
-        if (UseSearchV2 && !inCheck && !isPvNode && depth <= 2
-            && Math.Abs(alpha) < MateScore - 1000)
-        {
-            if (!haveStaticEval) { staticEval = Evaluation.Evaluate(board); haveStaticEval = true; }
-            futilityPrune = staticEval + 120 * depth <= alpha;
-        }
+        Move killer1 = ply < MaxPly ? _killers[ply, 0] : default;
+        Move killer2 = ply < MaxPly ? _killers[ply, 1] : default;
 
         while (picker.Next(out Move move))
         {
-            bool isQuiet = !IsCapture(board, move) && move.Flag != MoveFlag.Promotion;
+            if (hasExcluded && SameMove(move, excluded)) continue;
 
-            // Budanan sessiz hamle; en az bir hamle mutlaka aranmalı.
-            if (futilityPrune && isQuiet && movesSearched > 0) continue;
+            bool isCapture = IsCapture(board, move);
+            bool isQuiet = !isCapture && move.Flag != MoveFlag.Promotion;
+            if (skipQuiets && isQuiet && !GivesCheck(board, move)) continue;
 
-            // --- Geç hamle budaması (LMP) ---
-            // Sığ derinlikte, sıralamanın epey gerisine düşmüş sessiz hamleler
-            // pratikte hiç işe yaramıyor. Azaltarak aramak yerine hiç aramıyoruz.
-            // Ana varyantta ve şahtayken uygulanmaz: orada hata pahalıya patlar.
-            if (LateMovePruning && isQuiet && !isPvNode && !inCheck
-                && depth <= 4 && movesSearched >= 4 + depth * depth
-                && Math.Abs(alpha) < MateScore - 1000)
-                continue;
+            int hist = isQuiet ? QuietHistory(board, move, ply) : 0;
 
-            var undo = board.MakeMove(move);
-
-            int score;
-            if (movesSearched == 0 || !UseAdvancedSearch)
+            // --- Sığ derinlikte hamle budamaları ---
+            if (!root && !inCheck && movesSearched > 0 && UseAdvancedSearch
+                && alpha > -MateScore + 1000 && !GivesCheck(board, move))
             {
-                // İlk hamle (sıralamaya göre en umutlusu) tam pencereyle aranır.
+                if (isQuiet)
+                {
+                    int lmrDepth = Math.Max(depth - 1 - LmrTable[Math.Min(depth, MaxPly),
+                                            Math.Min(movesSearched + 1, MoveGenerator.MaxMoves - 1)], 0);
+
+                    if (UseLmp && depth <= 8
+                        && movesSearched >= (3 + depth * depth) / (improving ? 1 : 2))
+                    {
+                        skipQuiets = true;
+                        continue;
+                    }
+                    if (UseFutility && lmrDepth <= 8 && staticEval + 120 + 110 * lmrDepth <= alpha)
+                        continue;
+                    if (UseHistPrune && lmrDepth <= 3 && hist < -3500 * depth)
+                        continue;
+                    if (UseSeePrune && lmrDepth <= 8 && See.Evaluate(board, move) < -25 * lmrDepth * lmrDepth)
+                        continue;
+                }
+                else if (UseSeePrune && depth <= 8 && See.Evaluate(board, move) < -100 * depth)
+                {
+                    continue;
+                }
+            }
+
+            // --- Singular extension ---
+            // Tablodaki hamle, diğer bütün hamlelerden belirgin biçimde iyiyse
+            // ("tek hamle"), onu bir ply daha derin ara.
+            int extension = 0;
+            if (UseSingular && !root && depth >= 8 && !hasExcluded && ttHit
+                && SameMove(move, ttMove) && ttType != NodeType.UpperBound
+                && ttDepth >= depth - 3 && Math.Abs(ttScore) < MateScore - 1000
+                && ply < MaxPly - 12)
+            {
+                int sBeta = ttScore - 2 * depth;
+                _excluded[ply] = move;
+                int v = Negamax(board, (depth - 1) / 2, ply, sBeta - 1, sBeta, cutNode);
+                _excluded[ply] = default;
+                if (_stopped) return 0;
+
+                if (v < sBeta) extension = 1;
+                else if (sBeta >= beta) return beta;           // çoklu kesme
+                else if (ttScore >= beta) extension = -1;       // ters uzatma
+            }
+
+            int newDepth = depth - 1 + extension;
+
+            _moveStack[ply] = move;
+            _pieceStack[ply] = PieceIndex(board.Squares[move.From]);
+            var undo = board.MakeMove(move);
+            bool givesCheck = board.IsInCheck(board.SideToMove);
+
+            int score = 0;
+            if (!UseAdvancedSearch)
+            {
                 score = -Negamax(board, depth - 1, ply + 1, -beta, -alpha);
             }
             else
             {
-                // --- Geç hamle azaltması (LMR) ---
-                // Sıralama işe yarıyorsa listenin sonundaki sessiz hamleler
-                // muhtemelen kötüdür. Onları önce SIĞ arayıp eleriz; yanılırsak
-                // (puan alpha'yı aşarsa) tam derinlikte tekrar ararız.
-                int reduction = 0;
-                if (LmrCurve)
+                bool doFull;
+                if (depth >= 2 && movesSearched >= 1 && isQuiet)
                 {
-                    if (isQuiet && depth >= 3 && movesSearched >= 3 && !inCheck)
+                    int r;
+                    if (UseLmrV3)
                     {
-                        reduction = LmrTable[Math.Min(depth, MaxPly),
-                                             Math.Min(movesSearched, MoveGenerator.MaxMoves - 1)];
-                        if (isPvNode && reduction > 0) reduction--;   // ana varyantta temkinli
-                        reduction = Math.Clamp(reduction, 0, depth - 2);
+                        r = LmrTable[Math.Min(depth, MaxPly), Math.Min(movesSearched + 1, MoveGenerator.MaxMoves - 1)];
+                        if (isPvNode) r--;
+                        if (cutNode) r++;
+                        if (!improving) r++;
+                        if (givesCheck) r--;
+                        if (SameMove(move, killer1) || SameMove(move, killer2)) r--;
+                        r -= hist / 8000;
                     }
+                    else
+                    {
+                        r = depth >= 3 && movesSearched >= 4 && !inCheck ? (movesSearched >= 8 ? 2 : 1) : 0;
+                    }
+                    int d = Math.Clamp(newDepth - r, 1, Math.Max(newDepth, 1));
+                    score = -Negamax(board, d, ply + 1, -alpha - 1, -alpha, true);
+                    doFull = score > alpha && d < newDepth;
                 }
-                else if (isQuiet && depth >= 3 && movesSearched >= 4 && !inCheck)
+                else
                 {
-                    reduction = movesSearched >= 8 ? 2 : 1;
+                    doFull = !isPvNode || movesSearched > 0;
                 }
 
-                // --- Ana varyant araması (PVS) ---
-                // İlk hamle en iyiyse gerisi sadece "daha iyi değil" diye
-                // kanıtlanmalı. Bunu en dar pencereyle (alpha, alpha+1) yapmak
-                // çok daha ucuzdur; kanıt tutmazsa tam pencereyle tekrarlarız.
-                score = -Negamax(board, depth - 1 - reduction, ply + 1, -alpha - 1, -alpha);
+                if (doFull)
+                    score = -Negamax(board, newDepth, ply + 1, -alpha - 1, -alpha, !cutNode);
 
-                if (score > alpha && reduction > 0)
-                    score = -Negamax(board, depth - 1, ply + 1, -alpha - 1, -alpha);
-
-                if (score > alpha && score < beta)
-                    score = -Negamax(board, depth - 1, ply + 1, -beta, -alpha);
+                if (isPvNode && (movesSearched == 0 || (score > alpha && score < beta)))
+                    score = -Negamax(board, newDepth, ply + 1, -beta, -alpha, false);
             }
 
             board.UnmakeMove(undo);
@@ -570,29 +812,36 @@ public class Search
 
             if (score >= beta)
             {
-                // Alış olmayan bir hamle kesme yaptıysa killer ve history'ye yaz.
+                FailHigh++;
+                if (movesSearched == 1) FailHighFirst++;
                 if (isQuiet && UseAdvancedSearch)
                 {
-                    if (ply < MaxPly)
+                    if (ply < MaxPly && !SameMove(move, _killers[ply, 0]))
                     {
                         _killers[ply, 1] = _killers[ply, 0];
                         _killers[ply, 0] = move;
                     }
-                    _history[move.From, move.To] += depth * depth;
+                    int bonus = HistoryBonus(depth);
+                    UpdateQuietHistory(board, move, ply, bonus);
+                    for (int i = 0; i < quietCount; i++)
+                        UpdateQuietHistory(board, quietsTried[i], ply, -bonus);
+                    if (ply >= 1 && _pieceStack[ply - 1] >= 0)
+                        _counterMoves[_pieceStack[ply - 1] * 64 + _moveStack[ply - 1].To] = move;
                 }
 
-                // Rakip buraya izin vermez, dalı kes. Puan bir ALT sınır.
-                Table.Store(board.ZobristKey, depth, ply, beta, NodeType.LowerBound, move);
+                if (!hasExcluded)
+                    Table.Store(key, depth, ply, beta, NodeType.LowerBound, move, inCheck ? short.MinValue : staticEval);
                 return beta;
             }
+
+            if (isQuiet && quietCount < 64) quietsTried[quietCount++] = move;
 
             if (score > alpha)
             {
                 alpha = score;
                 bestMove = move;
-                if (ply == 0) _bestMoveThisIteration = move;
+                if (root) _bestMoveThisIteration = move;
 
-                // Bu hamle, kendisinden sonraki en iyi zincirin başına geçiyor.
                 if (ply < MaxPly)
                 {
                     _pv[ply, ply] = move;
@@ -604,15 +853,17 @@ public class Search
             }
         }
 
-        // Hiç hamle aranamadıysa oyun bitmiştir: şahtaysak mat, değilsek pat.
-        // Mat puanına ply eklenir ki motor "erken mat"ı tercih etsin.
         if (movesSearched == 0)
+        {
+            if (hasExcluded) return alpha;
             return inCheck ? -MateScore + ply : 0;
+        }
 
-        // alpha hiç aşılmadıysa puan kesin değil, ÜST sınırdır.
-        var type = alpha > alphaOriginal ? NodeType.Exact : NodeType.UpperBound;
-        Table.Store(board.ZobristKey, depth, ply, alpha, type, bestMove);
-
+        if (!hasExcluded)
+        {
+            var type = alpha > alphaOriginal ? NodeType.Exact : NodeType.UpperBound;
+            Table.Store(key, depth, ply, alpha, type, bestMove, inCheck ? short.MinValue : staticEval);
+        }
         return alpha;
     }
 
@@ -620,56 +871,81 @@ public class Search
     /// Sessizlik araması. Derinlik bittiğinde pozisyonu olduğu gibi puanlamak
     /// tehlikelidir: tam vezir alınmış, karşılığı bir sonraki hamlede geliyorsa
     /// motor kendini vezir önde sanır. Bu yüzden derinlik bitse bile ALIŞLAR
-    /// bitene kadar bakmaya devam ederiz.
+    /// bitene kadar bakmaya devam ederiz. Şahtaysak bütün kaçışlara bakılır:
+    /// "olduğu gibi kalmak" (stand pat) şahtayken bir seçenek değil.
     /// </summary>
     private int Quiescence(Board board, int alpha, int beta, int ply)
     {
+        if (_stopped) return 0;
+        if (--_timeCheck <= 0)
+        {
+            _timeCheck = 1024;
+            if (Control.Stop || _timer.ElapsedMilliseconds > _timeLimitMs) { _stopped = true; return 0; }
+        }
         if (ply > SelDepth) SelDepth = ply;
-
         NodesSearched++;
 
-        int standPat = Evaluation.Evaluate(board);
-        if (standPat >= beta) return beta;
-        if (standPat > alpha) alpha = standPat;
+        bool inCheck = UseQsEvasion && board.IsInCheck(board.SideToMove);
+        if (ply >= MaxBufferPly - 2) return inCheck ? 0 : Evaluation.Evaluate(board);
 
-        // Bütün hamleleri üretip alışları ayıklamak yerine doğrudan alışları
-        // istiyoruz: aramanın düğümlerinin çoğu burada geçiyor.
+        bool isPvNode = beta - alpha > 1;
+        bool qHit = Table.Probe(board.ZobristKey, ply, out int ttScore, out _, out NodeType ttType, out _, out int qEval);
+        if (UseQsTt && !isPvNode && qHit
+            && (ttType == NodeType.Exact
+                || (ttType == NodeType.LowerBound && ttScore >= beta)
+                || (ttType == NodeType.UpperBound && ttScore <= alpha)))
+        {
+            return ttType == NodeType.LowerBound ? beta
+                 : ttType == NodeType.UpperBound ? alpha
+                 : Math.Clamp(ttScore, alpha, beta);
+        }
+
+        int standPat = 0;
+        if (!inCheck)
+        {
+            standPat = UseTtEval && qHit && qEval != short.MinValue ? qEval : Evaluation.Evaluate(board);
+            if (standPat >= beta) return beta;
+            if (standPat > alpha) alpha = standPat;
+        }
+
         int qSlot = Math.Min(ply, MaxBufferPly - 1);
         var qPicker = new MovePicker(this, board, -1, default,
-                                     _moveBuffers[qSlot], _scoreBuffers[qSlot], capturesOnly: true);
+                                     _moveBuffers[qSlot], _scoreBuffers[qSlot], capturesOnly: !inCheck);
 
+        int searched = 0;
         while (qPicker.Next(out Move move))
         {
-
-            // --- Delta budaması ---
-            // Alınan taşı bedavaya alsak bile alpha'ya yaklaşamıyorsak bu alışa
-            // bakmanın anlamı yok. 200 santipiyon pay, pozisyonel sürprizler için.
-            if (UseSearchV2)
+            if (!inCheck)
             {
-                int victim = board.Squares[move.To];
-                int gain = victim == Piece.None
-                    ? Evaluation.PieceValues[Piece.Pawn]
-                    : Evaluation.PieceValues[Piece.Type(victim)];
-                if (move.Flag == MoveFlag.Promotion)
-                    gain += Evaluation.PieceValues[move.PromotionType];
+                // --- Delta budaması ---
+                if (UseSearchV2)
+                {
+                    int victim = board.Squares[move.To];
+                    int gain = victim == Piece.None
+                        ? Evaluation.PieceValues[Piece.Pawn]
+                        : Evaluation.PieceValues[Piece.Type(victim)];
+                    if (move.Flag == MoveFlag.Promotion)
+                        gain += Evaluation.PieceValues[move.PromotionType];
 
-                if (standPat + gain + 200 < alpha) continue;
+                    if (standPat + gain + 200 < alpha) continue;
+                }
+
+                // --- SEE budaması ---
+                if (UseSee && See.Evaluate(board, move) < 0) continue;
             }
 
-            // --- SEE budaması ---
-            // Alışveriş sonunda zarar eden alışa bakmanın anlamı yok.
-            // Şahtayken uygulanmaz: orada her hamle zorunlu olabilir.
-            if (UseSee && !board.IsInCheck(board.SideToMove) && See.Evaluate(board, move) < 0)
-                continue;
-
+            _moveStack[ply] = move;
+            _pieceStack[ply] = PieceIndex(board.Squares[move.From]);
             var undo = board.MakeMove(move);
             int score = -Quiescence(board, -beta, -alpha, ply + 1);
             board.UnmakeMove(undo);
+            searched++;
 
             if (score >= beta) return beta;
             if (score > alpha) alpha = score;
         }
 
+        if (inCheck && searched == 0) return -MateScore + ply;
         return alpha;
     }
 
@@ -863,13 +1139,13 @@ public class Search
             if (move.Flag == MoveFlag.Promotion)
                 score += 9_000 + Evaluation.PieceValues[move.PromotionType];
 
-            if (UseAdvancedSearch && victim == Piece.None && move.Flag == MoveFlag.Normal
-                && ply >= 0 && ply < MaxPly)
+            if (UseAdvancedSearch && victim == Piece.None && move.Flag != MoveFlag.Promotion
+                && move.Flag != MoveFlag.EnPassant && ply >= 0 && ply < MaxBufferPly)
             {
-                // Killer'lar alışların hemen altında, history onların da altında.
-                if (SameMove(move, _killers[ply, 0])) score += 8_000;
-                else if (SameMove(move, _killers[ply, 1])) score += 7_000;
-                else score += Math.Min(_history[move.From, move.To], 6_000);
+                // Sessiz hamleler: killer'lar zaten ayrı aşamada verildi.
+                // Karşı hamle en üstte, sonra history + devam history'si.
+                score = QuietHistory(board, move, ply);
+                if (SameMove(move, CounterMoveAt(ply))) score += 50_000;
             }
 
             scores[i] = score;

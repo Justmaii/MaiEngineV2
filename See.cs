@@ -73,6 +73,13 @@ public static class See
             int nextFrom = LeastValuable(board, attackers, side, out int nextType);
             if (nextFrom < 0) break;
 
+            // Şah ancak kare artık korunmuyorsa alabilir. Bu kontrol eksikken
+            // "korunan kareye vezirle şah çekmek" SEE'de vezir kaybı gibi
+            // görünüyordu ve arama o hamleyi (çoğu zaman mat!) budayabiliyordu.
+            if (nextType == Piece.King
+                && (attackers & ~(1UL << nextFrom) & board.ColorBB[Piece.ColorIndex(Piece.Opposite(side))]) != 0)
+                break;
+
             depth++;
             if (depth >= 31) break;
 

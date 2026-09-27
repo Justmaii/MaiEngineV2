@@ -657,3 +657,41 @@ yani tablo hiçbir şey söylemiyor.
 **Sonuç: ağ değiştirilmedi.** Bu, kaydedilmeye değer bir negatif sonuç —
 ön elemedeki ilk tabloya güvenip ağı değiştirmek, "geliştirdim" diyerek
 motoru kötüleştirmek olurdu.
+
+## Arama v3: modern budamalar — önce −90, hata bulununca +70
+
+Arama çekirdeği yeniden yazıldı: null move (eval ≥ beta şartı, derinliğe göre
+azaltma), ters futility ve razoring (`improving` bayrağıyla), ProbCut, IIR,
+singular extension (çoklu kesme ve ters uzatma dahil), logaritmik LMR
+(PV / cut-node / improving / şah / killer / history düzeltmeleriyle), LMP,
+futility, history ve SEE budamaları, counter-move, 1 ve 2 ply devam
+history'si (gravity ile, kesmeyen sessiz hamlelere ceza), sessizlik
+aramasında şah kaçışları ve tablo okuması, durağan değerlendirmenin tabloda
+saklanması, mat mesafesi budaması. Her parça `MAIENGINE_OFF=nmp,rfp,se,...`
+ile kapatılabiliyor.
+
+Aynı sürede derinlik 11-13'ten 16-20'ye çıktı. **Ama ilk maçlar kayıptı:**
+eski sürüme karşı 62 oyunda %37 (−90). Parçaları kapatmak sonucu
+değiştirmedi; tek tek pozisyonlarda Stockfish'e göre hamle kalitesi eskisi
+kadar iyiydi. Sorunu kaybedilen oyunları Stockfish'e analiz ettirmek buldu:
+motor **1 hamlede matı** kaçırıyordu (ör. 13.Nb5?? Qh2#).
+
+Sebep eski bir SEE hatasıydı: SEE, şahın korunan bir kareye giremeyeceğini
+bilmiyordu. Korunan kareye vezirle şah çekmek "vezir kaybı" görünüyordu;
+eskiden bu sadece sıralamayı bozuyordu, yeni budamalar ise hamleyi hiç
+aramadan atıyordu. Düzeltme: SEE'ye şah kuralı, ve budamalar artık şah çeken
+hamleleri asla atlamıyor (`GivesCheck`, 522.971 hamlede make/unmake ile
+birebir doğrulandı).
+
+| Süre | Oyun | Sonuç | Elo |
+|---|---|---|---|
+| 100 ms/hamle, düzeltmeden önce | 62 | +12 =22 −28 | −90 |
+| 100 ms/hamle, düzeltmeden sonra | 116 | +22 =66 −28 | −18 |
+| 300 ms/hamle, düzeltmeden sonra | 78 | +24 =46 −8 | **+72** |
+
+Budamalı aramanın kazancı süre uzadıkça büyüyor. Kısa sürede başa baş,
+turnuva süresine yaklaştıkça öne geçiyor.
+
+Ölçüm düzeni de düzeltildi: `openings2.epd` (aramayla puanlanmış, dengeli 200
+açılış; her açılış iki renkle oynanıyor). Eski `matchuci` testinde test
+edilen taraf gömülü kitabı kullanıyor, rakip kullanmıyordu; bu da kapatıldı.

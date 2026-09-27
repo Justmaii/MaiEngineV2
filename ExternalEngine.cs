@@ -63,9 +63,10 @@ public sealed class ExternalEngine : IDisposable
     public void NewGame() { Send("ucinewgame"); IsReady(); }
 
     /// <returns>UCI hamlesi, veya oynayacak hamle yoksa null.</returns>
-    public string? Think(List<string> movesSoFar, int moveTimeMs)
+    public string? Think(List<string> movesSoFar, int moveTimeMs, string? startFen = null)
     {
-        Send("position startpos" + (movesSoFar.Count > 0 ? " moves " + string.Join(' ', movesSoFar) : ""));
+        string start = startFen == null ? "position startpos" : $"position fen {startFen}";
+        Send(start + (movesSoFar.Count > 0 ? " moves " + string.Join(' ', movesSoFar) : ""));
         Send($"go movetime {moveTimeMs}");
 
         while (true)
