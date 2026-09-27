@@ -130,6 +130,10 @@ switch (mode)
         BigAccVerify(args.Length > 1 && int.TryParse(args[1], out int bav) ? bav : 4);
         break;
 
+    case "dotbench":
+        DotBench();
+        break;
+
     case "bignet":
         BigNetCheck(args.Length > 1 ? args[1] : "/home/claude/nets/nn-ad9b42354671.nnue",
                     args.Length > 2 ? args[2] : "docs/nnue-ref.txt");
@@ -1138,4 +1142,30 @@ static void BigAccVerify(int depth)
         }
         return true;
     }
+}
+
+// Ic carpim yollarinin dogrudan karsilastirmasi.
+static void DotBench()
+{
+    Console.WriteLine($"Avx2: {System.Runtime.Intrinsics.X86.Avx2.IsSupported}  " +
+                      
+                      $"ArmDot: {System.Runtime.Intrinsics.Arm.Dp.IsSupported}  " +
+                      $"Vector<short>.Count: {System.Numerics.Vector<short>.Count}");
+    Console.WriteLine($"Kullanilan yol: UseSimd={NnueBigNetwork.UseSimd} UseInt8={NnueBigNetwork.UseInt8}\n");
+
+    var net = NnueBigNetwork.Shared;
+    if (net == null) { Console.WriteLine("Yeni ag yuklu degil."); return; }
+
+    var board = new Board("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    int sink = 0;
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+    const int rounds = 200_000;
+    for (int i = 0; i < rounds; i++)
+        sink += net.EvaluateAccumulated(board.NnueBig!.White, board.NnueBig.Black,
+                                        board.NnueBig.WhitePsqt, board.NnueBig.BlackPsqt,
+                                        board.SideToMove, 32);
+    clock.Stop();
+
+    Console.WriteLine($"{rounds:N0} degerlendirme / {clock.ElapsedMilliseconds} ms = " +
+                      $"{rounds * 1000L / Math.Max(1, clock.ElapsedMilliseconds):N0} degerlendirme/sn  (sink {sink})");
 }

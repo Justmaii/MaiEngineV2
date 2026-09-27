@@ -1,4 +1,8 @@
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.Arm;
+using System.Runtime.Intrinsics.X86;
 
 namespace ChessEngine;
 
@@ -307,7 +311,7 @@ public sealed class NnueBigNetwork
         int psqt = (usPsqt[bucket] - themPsqt[bucket]) / 2;
 
         // İkişerli çarpım: 1024 toplam, 512 çıktıya iniyor.
-        Span<short> transformed = stackalloc short[HalfDimensions];
+        Span<sbyte> transformed = stackalloc sbyte[HalfDimensions];
         Transform(us, transformed[..(HalfDimensions / 2)]);
         Transform(them, transformed[(HalfDimensions / 2)..]);
 
@@ -316,7 +320,7 @@ public sealed class NnueBigNetwork
         return (psqt + positional) / OutputScale;
     }
 
-    private static void Transform(ReadOnlySpan<short> accumulator, Span<short> output)
+    private static void Transform(ReadOnlySpan<short> accumulator, Span<sbyte> output)
     {
         int half = HalfDimensions / 2;
         int lanes = System.Numerics.Vector<short>.Count;
@@ -333,8 +337,10 @@ public sealed class NnueBigNetwork
                 a = System.Numerics.Vector.Min(System.Numerics.Vector.Max(a, zero), max);
                 b = System.Numerics.Vector.Min(System.Numerics.Vector.Max(b, zero), max);
 
-                // 127*127 = 16129, short'a sığar; 128'e bölünce 0..126 kalır.
-                ((a * b) >> 7).CopyTo(output[j..]);
+                // 127*127 = 16129, short'a sığar; 128'e bölünce 0..126 kalır,
+                // yani sonuç tek bayta (ve işaretli bayta) rahatça sığıyor.
+                var product = (a * b) >> 7;
+                for (int k = 0; k < lanes; k++) output[j + k] = (sbyte)product[k];
             }
         }
 
@@ -342,41 +348,62 @@ public sealed class NnueBigNetwork
         {
             int sum0 = Math.Clamp((int)accumulator[j], 0, 127);
             int sum1 = Math.Clamp((int)accumulator[j + half], 0, 127);
-            output[j] = (short)(sum0 * sum1 / 128);
+            output[j] = (sbyte)(sum0 * sum1 / 128);
         }
     }
 
-    private int Propagate(ReadOnlySpan<short> input, int bucket)
+    private int Propagate(ReadOnlySpan<sbyte> input, int bucket)
     {
         Span<int> fc0 = stackalloc int[Fc0Total];
         var fc0Bias = _fc0Biases[bucket];
-        var fc0Weight = _fc0Short[bucket];
+        var fc0Weight = _fc0Weights[bucket];
+
+        // Karşılaştırma yolu için girdinin 16-bit kopyası.
+        Span<short> wide = stackalloc short[0];
+        if (!UseInt8)
+        {
+            wide = stackalloc short[HalfDimensions];
+            for (int i = 0; i < HalfDimensions; i++) wide[i] = input[i];
+        }
 
         for (int o = 0; o < Fc0Total; o++)
-            fc0[o] = fc0Bias[o] + Dot(input, fc0Weight, o * HalfDimensions, HalfDimensions);
+            fc0[o] = fc0Bias[o] + (UseInt8
+                ? Dot(input, fc0Weight, o * HalfDimensions, HalfDimensions)
+                : DotWidened(wide, _fc0Short[bucket], o * HalfDimensions, HalfDimensions));
 
         // Birinci katmanın çıkışı iki ayrı aktivasyondan geçip yan yana konuyor:
         // kare alınmış hâli ve normal kırpılmış hâli. Ağ ikisini birlikte görüyor.
-        Span<short> hidden = stackalloc short[Fc1Inputs];
+        Span<sbyte> hidden = stackalloc sbyte[Fc1Inputs];
         hidden.Clear();
         for (int i = 0; i < Fc0Outputs; i++)
         {
             long squared = ((long)fc0[i] * fc0[i]) >> (2 * WeightScaleBits);
-            hidden[i] = (short)Math.Clamp(squared / 128, 0, 127);
-            hidden[Fc0Outputs + i] = (short)Math.Clamp(fc0[i] >> WeightScaleBits, 0, 127);
+            hidden[i] = (sbyte)Math.Clamp(squared / 128, 0, 127);
+            hidden[Fc0Outputs + i] = (sbyte)Math.Clamp(fc0[i] >> WeightScaleBits, 0, 127);
         }
 
         var fc1Bias = _fc1Biases[bucket];
-        var fc1Weight = _fc1Short[bucket];
+        var fc1Weight = _fc1Weights[bucket];
 
-        Span<short> hidden2 = stackalloc short[Fc2Inputs];
+        Span<short> wideHidden = stackalloc short[UseInt8 ? 0 : Fc1Inputs];
+        if (!UseInt8)
+            for (int i = 0; i < Fc1Inputs; i++) wideHidden[i] = hidden[i];
+
+        Span<sbyte> hidden2 = stackalloc sbyte[Fc2Inputs];
+        Span<short> wideHidden2 = stackalloc short[UseInt8 ? 0 : Fc2Inputs];
+
         for (int o = 0; o < Fc1Outputs; o++)
         {
-            int sum = fc1Bias[o] + Dot(hidden, fc1Weight, o * Fc1Inputs, Fc1Inputs);
-            hidden2[o] = (short)Math.Clamp(sum >> WeightScaleBits, 0, 127);
+            int sum = fc1Bias[o] + (UseInt8
+                ? Dot(hidden, fc1Weight, o * Fc1Inputs, Fc1Inputs)
+                : DotWidened(wideHidden, _fc1Short[bucket], o * Fc1Inputs, Fc1Inputs));
+            hidden2[o] = (sbyte)Math.Clamp(sum >> WeightScaleBits, 0, 127);
+            if (!UseInt8) wideHidden2[o] = hidden2[o];
         }
 
-        int output = _fc2Biases[bucket][0] + Dot(hidden2, _fc2Short[bucket], 0, Fc2Inputs);
+        int output = _fc2Biases[bucket][0] + (UseInt8
+            ? Dot(hidden2, _fc2Weights[bucket], 0, Fc2Inputs)
+            : DotWidened(wideHidden2, _fc2Short[bucket], 0, Fc2Inputs));
 
         // Birinci katmanın 16. çıkışı ağı atlayıp doğrudan sonuca ekleniyor.
         int forward = fc0[Fc0Outputs] * (600 * OutputScale) / (127 * (1 << WeightScaleBits));
@@ -388,27 +415,115 @@ public sealed class NnueBigNetwork
     /// İç çarpım — değerlendirmenin en pahalı yeri. İlk katmanda 16 çıkış x
     /// 1024 girdi = 16.384 çarpma var ve bu her düğümde yapılıyor.
     ///
-    /// Ara toplam int'te tutuluyor çünkü 1024 çarpımın toplamı short'a sığmaz.
+    /// Girdi de ağırlık da tek bayt. İşlemcilerde bunun için özel komutlar var
+    /// ve dört 8-bit çarpımını tek seferde yapıyorlar:
+    ///   x86  — vpmaddubsw + vpmaddwd (AVX2)
+    ///   ARM  — sdot (Apple Silicon dahil)
+    /// Bayttan 16-bit'e genişletip çarpmak aynı işi dört kat fazla komutla
+    /// yapmak demek; burada işlemcinin kendi komutunu kullanıyoruz.
+    ///
+    /// Üç yol da BİREBİR aynı sonucu vermek zorunda — bignet 300 pozisyonda
+    /// sınıyor.
     /// </summary>
-    private static int Dot(ReadOnlySpan<short> input, short[] weights, int offset, int count)
+    private static int Dot(ReadOnlySpan<sbyte> input, sbyte[] weights, int offset, int count)
     {
-        int lanes = System.Numerics.Vector<short>.Count;
-        int i = 0;
-        int sum = 0;
-
-        if (System.Numerics.Vector.IsHardwareAccelerated && count >= lanes)
+        if (UseSimd)
         {
-            var accumulator = System.Numerics.Vector<int>.Zero;
-            for (; i + lanes <= count; i += lanes)
-            {
-                var w = new System.Numerics.Vector<short>(weights, offset + i);
-                var x = new System.Numerics.Vector<short>(input[i..]);
-                System.Numerics.Vector.Widen(w * x, out var low, out var high);
-                accumulator += low + high;
-            }
-            sum = System.Numerics.Vector.Dot(accumulator, System.Numerics.Vector<int>.One);
+            if (Avx2.IsSupported && count >= 32)
+                return DotAvx2(input, weights, offset, count);
+
+            if (Dp.IsSupported && count >= 16)
+                return DotArmDot(input, weights, offset, count);
         }
 
+        int sum = 0;
+        for (int i = 0; i < count; i++) sum += input[i] * weights[offset + i];
+        return sum;
+    }
+
+    /// <summary>Ölçüm için: MAIENGINE_NOSIMD=1 tamamen skaler,
+    /// MAIENGINE_INT8=0 ise genişletilmiş 16-bit vektör yolu.</summary>
+    public static readonly bool UseSimd =
+        Environment.GetEnvironmentVariable("MAIENGINE_NOSIMD") != "1";
+
+    /// <summary>int8 komutları bu makinede var mı? Yoksa 16-bit vektör yoluna
+    /// düşeriz — skalere düşmek çok pahalı olurdu.</summary>
+    public static readonly bool UseInt8 =
+        Environment.GetEnvironmentVariable("MAIENGINE_INT8") != "0"
+        && (Avx2.IsSupported || Dp.IsSupported);
+
+    /// <summary>
+    /// int8 komutlarına geçmeden önceki yol: ağırlıklar yüklemede 16-bit'e
+    /// genişletiliyor ve çarpım 16-bit vektörlerle yapılıyor. Girdi de
+    /// 16-bit'e genişletilmiş bir tampondan okunuyor.
+    /// Karşılaştırma için duruyor.
+    /// </summary>
+    private static int DotWidened(ReadOnlySpan<short> input, short[] weights, int offset, int count)
+    {
+        int lanes = System.Numerics.Vector<short>.Count;
+        var accumulator = System.Numerics.Vector<int>.Zero;
+
+        int i = 0;
+        for (; i + lanes <= count; i += lanes)
+        {
+            var x = new System.Numerics.Vector<short>(input[i..]);
+            var w = new System.Numerics.Vector<short>(weights, offset + i);
+            System.Numerics.Vector.Widen(x * w, out var low, out var high);
+            accumulator += low + high;
+        }
+
+        int sum = System.Numerics.Vector.Dot(accumulator, System.Numerics.Vector<int>.One);
+        for (; i < count; i++) sum += input[i] * weights[offset + i];
+        return sum;
+    }
+
+    private static int DotAvx2(ReadOnlySpan<sbyte> input, sbyte[] weights, int offset, int count)
+    {
+        ref sbyte inputRef = ref MemoryMarshal.GetReference(input);
+        ref sbyte weightRef = ref weights[offset];
+
+        var ones = Vector256.Create((short)1);
+        var accumulator = Vector256<int>.Zero;
+
+        int i = 0;
+        for (; i + 32 <= count; i += 32)
+        {
+            var x = Vector256.LoadUnsafe(ref inputRef, (nuint)i);
+            var w = Vector256.LoadUnsafe(ref weightRef, (nuint)i);
+
+            // vpmaddubsw: bayt çiftlerini çarpıp 16-bit'te toplar.
+            // Girdi 0..126 olduğu için işaretsiz okumak güvenli, ve
+            // 127*127*2 = 32.258 int16'ya sığıyor — taşma yok.
+            var pairs = Avx2.MultiplyAddAdjacent(x.AsByte(), w);
+
+            // vpmaddwd: 16-bit çiftleri 32-bit'e toplar.
+            accumulator = Avx2.Add(accumulator, Avx2.MultiplyAddAdjacent(pairs, ones));
+        }
+
+        int sum = Vector256.Sum(accumulator);
+        for (; i < count; i++) sum += input[i] * weights[offset + i];
+        return sum;
+    }
+
+    private static int DotArmDot(ReadOnlySpan<sbyte> input, sbyte[] weights, int offset, int count)
+    {
+        ref sbyte inputRef = ref MemoryMarshal.GetReference(input);
+        ref sbyte weightRef = ref weights[offset];
+
+        var accumulator = Vector128<int>.Zero;
+
+        int i = 0;
+        for (; i + 16 <= count; i += 16)
+        {
+            var x = Vector128.LoadUnsafe(ref inputRef, (nuint)i);
+            var w = Vector128.LoadUnsafe(ref weightRef, (nuint)i);
+
+            // sdot: dörder baytı çarpıp toplar, doğrudan 32-bit'e yazar.
+            // Girdi 0..126 olduğu için işaretli okumak da güvenli.
+            accumulator = Dp.DotProduct(accumulator, x, w);
+        }
+
+        int sum = Vector128.Sum(accumulator);
         for (; i < count; i++) sum += input[i] * weights[offset + i];
         return sum;
     }

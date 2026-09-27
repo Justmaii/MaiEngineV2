@@ -362,6 +362,38 @@ Bir motoru "Stockfish'i N elo'ya kilitleyip" ölçmek yaygın ama yanıltıcı.
 Stockfish, sınırsız Stockfish'ten 470 elo zayıf. Yani o ayarlardaki sayılar
 rakibin gerçek gücü değildir.
 
+## int8 komutları: değerlendirme 2,25 kat hızlandı
+
+NNUE'de girdi de ağırlık da tek bayt, ve işlemcilerde tam bu iş için komutlar
+var: dört 8-bit çarpımını tek seferde yapıp toplayanlar. İlk yazımda bunlar
+kullanılmıyordu — baytlar 16-bit'e genişletilip çarpılıyordu, yani aynı iş
+dört kat fazla komutla yapılıyordu.
+
+| | x86 | ARM (Apple Silicon) |
+|---|---|---|
+| Komut | `vpmaddubsw` + `vpmaddwd` (AVX2) | `sdot` |
+
+İlk katman her değerlendirmede 16 × 1024 = **16.384 çarpma** yapıyor, yani
+buradaki fark doğrudan hissediliyor:
+
+| | değerlendirme/sn | derinlik 16'ya süre |
+|---|---|---|
+| 16-bit vektör (önceki) | 186.567 | 2.371 ms |
+| **int8 komutları** | **419.287** | **1.404 ms** |
+
+Değerlendirme **2,25 kat**, arama toplamda **1,69 kat** hızlandı. Düğüm
+sayıları birebir aynı kaldı (465.661), yani motor farklı oynamıyor — sadece
+aynı işi daha hızlı yapıyor.
+
+Her iki yol da 300 referans pozisyonda birebir aynı sonucu veriyor. İşlemcide
+int8 komutu yoksa 16-bit yola düşülür (skalere değil — o çok pahalı).
+Karşılaştırma için `MAIENGINE_INT8=0` ve `MAIENGINE_NOSIMD=1` duruyor.
+
+**Ölçüm notu:** bu ölçümü ilk yaptığımda `bench` çıktısının son satırlarını
+karşılaştırdım ve int8'in *daha yavaş* olduğu sonucuna vardım. Hata şuydu:
+iki yapılandırma aynı sürede farklı derinliklere ulaşıyor, yani son satırlar
+farklı işleri ölçüyor. Karşılaştırma **aynı derinlikte** yapılmalı.
+
 ## Magic bitboard: doğru ama küçük
 
 Kayan taş saldırıları artık tek çarpma ve tek tablo okumasıyla bulunuyor.
