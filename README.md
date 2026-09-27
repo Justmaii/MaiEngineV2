@@ -362,6 +362,34 @@ Bir motoru "Stockfish'i N elo'ya kilitleyip" ölçmek yaygın ama yanıltıcı.
 Stockfish, sınırsız Stockfish'ten 470 elo zayıf. Yani o ayarlardaki sayılar
 rakibin gerçek gücü değildir.
 
+## Magic bitboard: doğru ama küçük
+
+Kayan taş saldırıları artık tek çarpma ve tek tablo okumasıyla bulunuyor.
+Fikir şu: bir kareden çıkan ışınların üstündeki taşlar dışında hiçbir şey
+sonucu değiştirmez (kenarlar da sayılmaz — kenardaki taşın arkası yok).
+Kale için en fazla 12, fil için 9 kare kalıyor, yani 4096 durum; hepsinin
+cevabı önceden hesaplanıp saklanıyor. Geriye tek soru kalıyor: dağınık 12
+biti 0-4095 arası bir indekse nasıl çevirmeli? Öyle bir çarpan bulmalı ki
+çarpımın üst bitleri her durum için farklı çıksın. O çarpan analitik olarak
+bulunmuyor — rastgele denenip tutanı alınıyor, ve bu yükleme sırasında bir
+kez yapılıyor (sabit tohumla, her çalıştırmada aynı sayılar).
+
+| | klasik ray | magic |
+|---|---|---|
+| perft toplamı | 1.229 ms | **1.168 ms** |
+| arama, sabit derinlik | 308.000 düğüm/sn | **317.000 düğüm/sn** |
+
+Yani **yaklaşık %3-5**. Küçük, çünkü saldırı üretimi artık darboğaz değil:
+zamanın çoğu NNUE değerlendirmesinde ve `MakeMove`'da geçiyor.
+
+**Bu değişiklik için maç sonucu verilmiyor.** %3 hız kabaca 2 elo eder;
+64 oyunun hata payı ±54. Ölçemediğimiz bir şeyi ölçmüş gibi sunmanın anlamı
+yok. Tutulma gerekçesi doğrulanmış olması ve ileride değerlendirme
+ucuzlarsa kazancın büyüyecek olması — iddia değil, gerekçe.
+
+Doğrulama: `bbcheck` 512.384 doluluk örneğinde yavaş referansla birebir aynı.
+Klasik yol `MAIENGINE_CLASSICRAYS=1` ile geri gelir; ikisi karşılaştırılabilsin diye duruyor.
+
 ## Arama teknikleri: ölçüldü, reddedildi
 
 Büyük motorlarda standart olan üç teknik eklendi ve ölçüldü:
