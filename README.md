@@ -326,6 +326,42 @@ Ağırlıklar yükleme sırasında `short`'a genişletilip iç çarpımlar
 vektörleştirilince **4,6 kat** hızlandı ve sonuç bit düzeyinde değişmedi
 (300/300 hâlâ birebir).
 
+## inphish 4.0.0'a karşı: −376 elo
+
+Aynı ağı kullanan bir rakibe karşı ölçüm — yani değerlendirme eşit, fark
+tamamen arama ve hızda.
+
+| | |
+|---|---|
+| 34 oyun, 1 dk + 0,6 sn, dengeli açılış seti | 3,5/34 (%10,3) |
+| Elo farkı | **−376** (%95 güven: −504 .. −248) |
+| G / B / Y | 0 / 7 / 27 |
+
+Önceki karşılaşma (eski ağ, 1+0.01) **20-0-0** kaybedilmişti, yani %0.
+
+**Farkın kaynağı ölçüldü: derinlik.** Oyunlarda biz 11-13 ply, rakip 17-21 ply
+arıyor. Bu seviyelerde her ply kabaca 50-70 elo eder; altı-yedi plylik fark
+gördüğümüz −376'yı tek başına açıklıyor.
+
+Somut örnek, 7. turdan:
+
+| Hamle | MaiEngine | inphish |
+|---|---|---|
+| 41...Qd2 | **0,00** (derinlik 11) | +1,87 |
+| 42.Re5 | — | **+8,27** (derinlik 14) |
+| 42...Qxf2+ | −2,34 | +8,38 |
+
+41. hamlede kaleyi tek korumayla bırakıyoruz; `Re5` gelince iki saldırı bir
+koruma kalıyor ve malzeme gidiyor. Rakip bunu üç ply önceden gördü, biz
+göremedik. Değerlendirme aynı, hesap aynı — fark sadece ne kadar ileriye
+bakabildiğimiz.
+
+Bu yüzden sıradaki iş arama verimi ve hız: ProbCut, singular extension,
+counter-move sıralaması, correction history. Ama önce **ölçüm altyapısı**:
+bu tekniklerin her biri 20-40 elo getirir, 34 oyunun hata payı ise ±128.
+Göremeyeceğimiz bir kazancı ölçmeye çalışmak, dün gece iki değişikliği
+"0 elo" diye işaretlememize yol açtı.
+
 ## Nerede duruyoruz: Stockfish 5'e karşı
 
 Mutlak elo ölçmenin dürüst yolu, yayınlanmış gücü olan bir motora karşı
