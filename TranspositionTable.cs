@@ -112,6 +112,21 @@ public class TranspositionTable
         Stores = 0;
     }
 
+    /// <summary>Tablo ne kadar dolu (binde). Arayüzler bunu "hashfull" olarak
+    /// gösterir; tablonun küçük gelip gelmediğini anlamanın en pratik yolu.
+    /// Bütün tabloyu taramak pahalı olur, ilk 1000 kayıt örnekleniyor.</summary>
+    public int PermillFull()
+    {
+        int sample = Math.Min(1000, _entries.Length);
+        if (sample == 0) return 0;
+
+        int used = 0;
+        for (int i = 0; i < sample; i++)
+            if (_entries[i].Data != 0 || _entries[i].KeyXorData != 0) used++;
+
+        return used * 1000 / sample;
+    }
+
     public void Clear()
     {
         Array.Clear(_entries);

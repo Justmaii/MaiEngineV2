@@ -58,6 +58,34 @@ public class Search
     private readonly int[][] _scoreBuffers;
 
     /// <summary>
+    /// Üçgen PV tablosu: motorun düşündüğü varyantın tamamı.
+    ///
+    /// Arama zaten "en iyi hamle, sonra rakibin en iyi cevabı, sonra..."
+    /// zincirini biliyor ama sonunda sadece ilk hamleyi döndürüyordu.
+    /// Burada her derinlik kendi en iyi zincirini tutuyor ve alpha yükselince
+    /// bir alt derinliğinkini kendi hamlesinin arkasına ekliyor.
+    ///
+    /// Oyun gücüne etkisi yok; izlerken ve hata ararken motorun NEDEN o hamleyi
+    /// oynadığını görmeyi sağlıyor.
+    /// </summary>
+    private readonly Move[,] _pv = new Move[MaxPly, MaxPly];
+    private readonly int[] _pvLength = new int[MaxPly];
+
+    /// <summary>Arama sırasında ulaşılan en derin nokta (quiescence dahil).</summary>
+    public int SelDepth { get; private set; }
+
+    /// <summary>Son aramanın ana varyantı.</summary>
+    public IReadOnlyList<Move> PrincipalVariation
+    {
+        get
+        {
+            var line = new List<Move>();
+            for (int i = 0; i < _pvLength[0] && i < MaxPly; i++) line.Add(_pv[0, i]);
+            return line;
+        }
+    }
+
+    /// <summary>
     /// Yeni bir iterasyona başlamak için son an (ms). 0 = kapalı, sadece
     /// sert sınır kullanılır. Sert sınır (timeLimitMs) iterasyonu ORTASINDA
     /// keser ve o iterasyonun sonucu atılır; yumuşak sınır o israfı önler.
@@ -209,6 +237,8 @@ public class Search
         }
 
         NodesSearched = 0;
+        SelDepth = 0;
+        Array.Clear(_pvLength);
         _stopped = false;
         _timeLimitMs = timeLimitMs;
         _previousBest = default;
@@ -383,6 +413,8 @@ public class Search
             return 0;
         }
         NodesSearched++;
+        if (ply > SelDepth) SelDepth = ply;
+        if (ply < MaxPly) _pvLength[ply] = ply;
 
         // Beraberlikler: kökte değilse hemen 0 dön, aramaya gerek yok.
         if (ply > 0 && (board.IsRepetition() || board.HalfmoveClock >= 100)) return 0;
@@ -559,6 +591,16 @@ public class Search
                 alpha = score;
                 bestMove = move;
                 if (ply == 0) _bestMoveThisIteration = move;
+
+                // Bu hamle, kendisinden sonraki en iyi zincirin başına geçiyor.
+                if (ply < MaxPly)
+                {
+                    _pv[ply, ply] = move;
+                    int childLength = ply + 1 < MaxPly ? _pvLength[ply + 1] : ply + 1;
+                    for (int next = ply + 1; next < childLength && next < MaxPly; next++)
+                        _pv[ply, next] = _pv[ply + 1, next];
+                    _pvLength[ply] = childLength;
+                }
             }
         }
 
@@ -582,6 +624,8 @@ public class Search
     /// </summary>
     private int Quiescence(Board board, int alpha, int beta, int ply)
     {
+        if (ply > SelDepth) SelDepth = ply;
+
         NodesSearched++;
 
         int standPat = Evaluation.Evaluate(board);

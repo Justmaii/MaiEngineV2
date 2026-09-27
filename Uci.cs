@@ -223,8 +223,16 @@ public class Uci
                 : $"cp {score}";
 
             long nps = ms > 0 ? nodes * 1000 / ms : 0;
-            Console.WriteLine($"info depth {d} score {scoreText} nodes {nodes} " +
-                              $"nps {nps} time {ms} pv {best}");
+
+            // Ana varyantın tamamı: arayüz motorun ne planladığını gösterebilsin.
+            var line = _search.PrincipalVariation;
+            string pv = line.Count > 0
+                ? string.Join(' ', line)
+                : (best.IsNull ? "" : best.ToString());
+
+            Console.WriteLine($"info depth {d} seldepth {_search.SelDepth} score {scoreText} " +
+                              $"nodes {nodes} nps {nps} hashfull {_search.Table.PermillFull()} " +
+                              $"time {ms} pv {pv}");
         };
 
         var move = _search.FindBestMove(_board, depth, moveTime, verbose: false);
