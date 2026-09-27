@@ -1,12 +1,108 @@
-# MaiEngine v2 (NNUE)
+<p align="center">
+  <img src="docs/images/banner.png" alt="MaiEngine v2" width="100%">
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="Lisans: GPL-3.0-or-later" src="https://img.shields.io/badge/lisans-GPL--3.0--or--later-1baf7a"></a>
+  <img alt="Dil: C#" src="https://img.shields.io/badge/dil-C%23-2a78d6">
+  <img alt="Protokol: UCI" src="https://img.shields.io/badge/protokol-UCI-52514e">
+</p>
+
+**MaiEngine v2**, C# ile sıfırdan yazılmış bir UCI satranç motorudur. Kendi
+grafik arayüzü yok: bir satranç arayüzüne ya da turnuva programına motor olarak
+eklenir, standart girdi/çıktı üzerinden UCI konuşur.
 
 [MaiEngine](https://github.com/Justmaii/MaiEngine)'in ikinci sürümü.
-Arama aynı, **değerlendirme farklı**: elle yazılmış materyal + kare tabloları
-yerine bir sinir ağı (NNUE) kullanıyor.
+Arama, hamle üretimi ve tahta temsili kendi kodu; **değerlendirme** için
+Stockfish'in NNUE ağını kullanıyor.
 
-Amaç bir soruyu ölçmek: **bir motorun gücünün ne kadarı araması, ne kadarı
-değerlendirmesi?** v1 ile v2 arasındaki tek fark değerlendirme olduğu için,
-aradaki elo farkı doğrudan bunun cevabı.
+Projenin asıl konusu motorun kendisi kadar **nasıl geliştirildiği**: hiçbir
+değişiklik "daha iyi göründüğü için" tutulmadı. Her biri maçla ölçüldü, ve
+ölçüm kazanç göstermeyenler — kodu çalışıyor olsa bile — geri alındı.
+
+## Hızlı başlangıç
+
+```bash
+git clone https://github.com/Justmaii/MaiEngineV2.git
+cd MaiEngineV2
+curl -L -o nn-big.nnue https://raw.githubusercontent.com/official-stockfish/networks/master/nn-ad9b42354671.nnue
+dotnet build -c Release
+```
+
+Satranç arayüzüne eklerken (Cute Chess, Arena, BanksiaGUI):
+
+| Alan | Değer |
+|---|---|
+| Command | `dotnet <yol>/bin/Release/net10.0/MaiEngineV2.dll uci` |
+| Working directory | depo klasörü (ağ dosyası orada aranır) |
+| Protocol | UCI |
+
+Tarayıcıda oynamak için `dotnet run -c Release web`, terminalde `dotnet run -c Release play`.
+
+## Ölçümler
+
+<p align="center">
+  <img src="docs/images/results.png" alt="Ölçülen her değişiklik" width="100%">
+</p>
+
+Üç değişiklik reddedildi, biri kazanç göstermediği hâlde başka bir gerekçeyle
+tutuldu (hız, büyük ağın ön şartı). Ayrıntılar aşağıdaki bölümlerde, her biri
+oyun sayısı ve güven aralığıyla.
+
+<p align="center">
+  <img src="docs/images/calibration.png" alt="Stockfish 5'e karşı" width="100%">
+</p>
+
+## Neler var
+
+**Arama:** iterative deepening, negamax + alpha-beta, ana varyant araması (PVS),
+transposition table (kilitsiz, çok iş parçacığı için XOR doğrulamalı), null-move
+budaması, geç hamle azaltması (LMR), aspiration windows, ters futility, futility
+budaması, quiescence + delta budaması, SEE ile alış budaması ve sıralaması, şah
+uzatması, killer + history sıralaması, aşamalı hamle üretimi, **Lazy SMP** ile
+çok çekirdekli arama.
+
+**Değerlendirme:** Stockfish 15.1'in NNUE ağı (HalfKAv2_hm, 1024×2, 8 katman
+yığını) — inference kodu bu depoya ait ve Stockfish'in çıktısıyla birebir
+doğrulandı. Stockfish 12'nin eski HalfKP ağı da destekleniyor.
+
+**Tahta:** 8×8 dizi + bitboard'lar, Zobrist hashing, Polyglot açılış kitabı
+desteği, UCI zaman yönetimi, ve motoru başka motorlara karşı oynatan dahili
+maç aracı.
+
+**UCI ayarları:** `Hash`, `Threads`, `OwnBook`, `BookFile`, `Clear Hash`.
+
+**Yok:** ponder, Syzygy tablebase, Chess960.
+
+## Doğrulama
+
+Bu projede hiçbir hızlı yol, yerini aldığı yavaş yolla karşılaştırılmadan
+kullanılmadı:
+
+| Komut | Ne yapıyor | Ölçek |
+|---|---|---|
+| `perft` | Hamle üretimi, 5 standart pozisyon | 27 test |
+| `bignet` | Yeni ağ vs Stockfish 15.1'in ham çıktısı | **300/300 birebir** |
+| `nnuecheck` | Eski ağ vs Stockfish 12'nin ham çıktısı | **300/300 birebir** |
+| `bigaccverify` | Artımlı accumulator vs sıfırdan hesap | 185.939 düğüm |
+| `accverify` | Aynısı, eski ağ | 7.037.881 düğüm |
+| `pseudocheck` | `IsPseudoLegal` vs hamle üreteci | 14,7 milyon kontrol |
+| `attackcheck` | Bitboard saldırı sorgusu vs mailbox sürümü | 23,8 milyon karşılaştırma |
+| `seecompare` | Bitboard SEE vs mailbox SEE | 1.272.951 alış |
+| `bbcheck` | Hızlı kayan taş maskesi vs yavaş referans | 512.384 maske |
+
+Ayrıca `perft` her düğümde Zobrist anahtarını, piyon anahtarını, bitboard
+tutarlılığını, ucuz yasallık testini ve alış/sessiz hamle ayrımını kontrol eder.
+
+## Kendi maçını çalıştır
+
+Motor, başka bir UCI motoruna karşı kendi kendine maç oynayabilir:
+
+```bash
+dotnet run -c Release matchuci /yol/rakip-motor 64 150     # 64 oyun, hamle başına 150 ms
+dotnet run -c Release matchclock /yol/rakip-motor 20 600 6000   # saatli: 10 dk + 6 sn
+dotnet run -c Release openings 60 8 openings.epd           # dengeli açılış seti üret
+```
 
 ## Lisans: GPLv3
 
