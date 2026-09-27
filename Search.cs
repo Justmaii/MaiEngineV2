@@ -106,6 +106,26 @@ public class Search
     /// arama derinliğinden fazla olmalı.</summary>
     private const int MaxBufferPly = MaxPly * 2 + 8;
 
+    /// <summary>
+    /// Geç hamle azaltması tablosu: [derinlik][kaçıncı hamle] -> kaç ply azalt.
+    ///
+    /// Sabit "4. hamleden sonra 1, 8. hamleden sonra 2" yerine logaritmik bir
+    /// eğri: derinlik arttıkça ve hamle listede geriye gittikçe azaltma artıyor.
+    /// Sıralamaya güveniyoruz — listenin sonundaki sessiz hamlelerin iyi çıkma
+    /// ihtimali düşük, yanılırsak zaten tam derinlikte tekrar arıyoruz.
+    /// </summary>
+    private static readonly int[,] LmrTable = BuildLmrTable();
+
+    private static int[,] BuildLmrTable()
+    {
+        var table = new int[MaxPly + 1, MoveGenerator.MaxMoves];
+        for (int depth = 1; depth <= MaxPly; depth++)
+            for (int moveNumber = 1; moveNumber < MoveGenerator.MaxMoves; moveNumber++)
+                table[depth, moveNumber] =
+                    (int)(0.75 + Math.Log(depth) * Math.Log(moveNumber) / 2.25);
+        return table;
+    }
+
     private static (Move[][], int[][]) CreateBuffers()
     {
         var moves = new Move[MaxBufferPly][];
@@ -146,6 +166,21 @@ public class Search
     /// aranıyordu. Bitboard sürümüyle 176 oyunda %56,5 = +46 elo
     /// (%95 güven +13..+79), o yüzden artık varsayılan olarak açık.</summary>
     public bool UseSee = true;
+
+    // --- Ölçülüp REDDEDİLEN arama teknikleri ---
+    //
+    // Üçü de büyük motorlarda standart, üçü de burada kazanç vermedi.
+    // Tek tek 16'şar oyunda %50 çıktılar; üçü birden açıkken 32 oyunda
+    // %37,5 (-89 elo) verdiler, yani birlikte zarar ediyorlar: arama ağacı
+    // fazla budanıyor ve derinlik kağıt üstünde artarken (16 -> 23 ply)
+    // oyun gücü düşüyor.
+    //
+    // Kod duruyor ve ortam değişkeniyle açılabiliyor, çünkü doğru ayarlarla
+    // (farklı eşikler, "improving" bayrağı, counter-move sıralaması) tekrar
+    // denenmeye değerler. Ama ölçülmeden açılmazlar.
+    public bool LateMovePruning = Environment.GetEnvironmentVariable("MAIENGINE_LMP") == "1";
+    public bool InternalReduction = Environment.GetEnvironmentVariable("MAIENGINE_IIR") == "1";
+    public bool LmrCurve = Environment.GetEnvironmentVariable("MAIENGINE_LMRCURVE") == "1";
 
     /// <summary>Son hamle kitaptan mı geldi?</summary>
     public bool LastMoveFromBook { get; private set; }
@@ -362,7 +397,14 @@ public class Search
         }
 
         bool inCheck = board.IsInCheck(board.SideToMove);
+
+        // --- İçsel iterasyon azaltması (IIR) ---
+        // Tabloda hamle yoksa sıralama kör demektir; bu düğümü tam derinlikte
+        // aramak pahalı ve muhtemelen israf. Bir ply azaltıp aramak, hem ucuz
+        // hem de tabloya bir hamle yazdırıyor — bir sonraki gelişte sıralama
+        // artık kör olmuyor.
         bool isPvNode = beta - alpha > 1;
+        if (InternalReduction && ttMove.IsNull && !isPvNode && depth >= 6 && !inCheck) depth--;
 
         // Şah uzatması: şahtayken durmak tehlikelidir, pozisyon "sessiz" değildir.
         // Bir derinlik daha bakarak şahın nasıl çözüldüğünü görürüz.
@@ -437,6 +479,15 @@ public class Search
             // Budanan sessiz hamle; en az bir hamle mutlaka aranmalı.
             if (futilityPrune && isQuiet && movesSearched > 0) continue;
 
+            // --- Geç hamle budaması (LMP) ---
+            // Sığ derinlikte, sıralamanın epey gerisine düşmüş sessiz hamleler
+            // pratikte hiç işe yaramıyor. Azaltarak aramak yerine hiç aramıyoruz.
+            // Ana varyantta ve şahtayken uygulanmaz: orada hata pahalıya patlar.
+            if (LateMovePruning && isQuiet && !isPvNode && !inCheck
+                && depth <= 4 && movesSearched >= 4 + depth * depth
+                && Math.Abs(alpha) < MateScore - 1000)
+                continue;
+
             var undo = board.MakeMove(move);
 
             int score;
@@ -452,8 +503,20 @@ public class Search
                 // muhtemelen kötüdür. Onları önce SIĞ arayıp eleriz; yanılırsak
                 // (puan alpha'yı aşarsa) tam derinlikte tekrar ararız.
                 int reduction = 0;
-                if (isQuiet && depth >= 3 && movesSearched >= 4 && !inCheck)
+                if (LmrCurve)
+                {
+                    if (isQuiet && depth >= 3 && movesSearched >= 3 && !inCheck)
+                    {
+                        reduction = LmrTable[Math.Min(depth, MaxPly),
+                                             Math.Min(movesSearched, MoveGenerator.MaxMoves - 1)];
+                        if (isPvNode && reduction > 0) reduction--;   // ana varyantta temkinli
+                        reduction = Math.Clamp(reduction, 0, depth - 2);
+                    }
+                }
+                else if (isQuiet && depth >= 3 && movesSearched >= 4 && !inCheck)
+                {
                     reduction = movesSearched >= 8 ? 2 : 1;
+                }
 
                 // --- Ana varyant araması (PVS) ---
                 // İlk hamle en iyiyse gerisi sadece "daha iyi değil" diye

@@ -230,6 +230,35 @@ Ağırlıklar yükleme sırasında `short`'a genişletilip iç çarpımlar
 vektörleştirilince **4,6 kat** hızlandı ve sonuç bit düzeyinde değişmedi
 (300/300 hâlâ birebir).
 
+## Arama teknikleri: ölçüldü, reddedildi
+
+Büyük motorlarda standart olan üç teknik eklendi ve ölçüldü:
+
+- **Geç hamle budaması (LMP):** sığ derinlikte, sıralamanın gerisine düşmüş
+  sessiz hamleleri hiç aramamak.
+- **İçsel iterasyon azaltması (IIR):** tabloda hamle yoksa sıralama kördür,
+  bir ply azaltıp aramak.
+- **Logaritmik LMR eğrisi:** sabit "4. hamleden sonra 1, 8.'den sonra 2"
+  yerine derinliğe ve sıraya göre artan azaltma.
+
+| Yapılandırma | Oyun | Skor | Elo |
+|---|---|---|---|
+| Yalnız LMR eğrisi | 16 | %50 | 0 |
+| Yalnız LMP | 16 | %50 | 0 |
+| Yalnız IIR (derinlik ≥ 4, her düğüm) | 16 | %37,5 | −89 |
+| Yalnız IIR (derinlik ≥ 6, ana varyant hariç) | 16 | %50 | 0 |
+| **Üçü birden** | **32** | **%37,5** | **−89** |
+
+Tek tek zararsız, birlikte zararlı. Sebebi ölçümde görünüyor: üçü açıkken
+arama aynı sürede derinlik 16 yerine **23**'e iniyor — yani ağaç çok daha
+fazla budanıyor. Kağıt üstünde etkileyici, tahtada daha kötü: budanan
+dalların bir kısmı gerçekten önemliymiş.
+
+**Üçü de varsayılan olarak kapalı.** Kod duruyor ve ortam değişkeniyle
+açılabiliyor (`MAIENGINE_LMP=1`, `MAIENGINE_IIR=1`, `MAIENGINE_LMRCURVE=1`),
+çünkü farklı eşiklerle, "improving" bayrağıyla ya da counter-move
+sıralamasıyla birlikte tekrar denenmeye değerler. Ama ölçülmeden açılmazlar.
+
 ## Hız: ölçülebilir kazanç, ölçülemeyen elo
 
 Üç değişiklik yapıldı ve hepsi ham hızı artırdı:
