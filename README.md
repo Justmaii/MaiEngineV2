@@ -230,6 +230,42 @@ Ağırlıklar yükleme sırasında `short`'a genişletilip iç çarpımlar
 vektörleştirilince **4,6 kat** hızlandı ve sonuç bit düzeyinde değişmedi
 (300/300 hâlâ birebir).
 
+## Nerede duruyoruz: Stockfish 5'e karşı
+
+Mutlak elo ölçmenin dürüst yolu, yayınlanmış gücü olan bir motora karşı
+oynamaktır. Referans olarak **Stockfish 5** (2014, sınırsız, tam gücüyle)
+derlendi ve aynı makinede oynandı:
+
+| | Skor | Elo farkı |
+|---|---|---|
+| Eski ağ (Stockfish 12), 400 ms, 36 oyun | 7,0/36 (%19,4) | **−247** |
+| **Yeni ağ (Stockfish 15.1), 250 ms, 34 oyun** | **16,5/34 (%48,5)** | **−10** (%95: −93..+72) |
+
+Yani tek gecede, aynı referansa karşı **−247'den başa baş duruma** geldik.
+
+Buradan "elomuz şu" diye bir sayı çıkarmıyoruz. Stockfish 5'in eski CCRL
+listelerindeki yeri 3050-3100 civarıydı, ama o listeler 40 hamle/40 dakika
+ile ve başka donanımda ölçülür; biz hamle başına 250 ms oynadık. Söylenebilecek
+en dürüst cümle şudur: *sınırsız Stockfish 5 ile, bu süre kontrolünde, başa baş.*
+
+### Not: Stockfish'in `UCI_Elo` ayarı bir cetvel değil
+
+Bir motoru "Stockfish'i N elo'ya kilitleyip" ölçmek yaygın ama yanıltıcı.
+Ölçtük:
+
+| Rakip | Skorumuz (eski ağ) |
+|---|---|
+| Stockfish, UCI_Elo=2000 | %100 |
+| Stockfish, UCI_Elo=2400 | %93,8 |
+| Stockfish, UCI_Elo=2800 | %78,1 |
+| Stockfish, UCI_Elo=3000 | %40,6 |
+| Stockfish, UCI_Elo=3190 (tavan) | %40,6 |
+| Stockfish, sınırsız | %6,3 |
+
+3000 ile 3190 **aynı** sonucu veriyor: ölçek orada doyuyor. Ve "3190" ayarındaki
+Stockfish, sınırsız Stockfish'ten 470 elo zayıf. Yani o ayarlardaki sayılar
+rakibin gerçek gücü değildir.
+
 ## Arama teknikleri: ölçüldü, reddedildi
 
 Büyük motorlarda standart olan üç teknik eklendi ve ölçüldü:
