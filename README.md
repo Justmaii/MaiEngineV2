@@ -381,7 +381,12 @@ buradaki fark doğrudan hissediliyor:
 | 16-bit vektör (önceki) | 186.567 | 2.371 ms |
 | **int8 komutları** | **419.287** | **1.404 ms** |
 
-Değerlendirme **2,25 kat**, arama toplamda **1,69 kat** hızlandı. Düğüm
+Değerlendirme **2,25 kat**, arama toplamda **1,69 kat** hızlandı.
+
+Yukarıdaki ölçüm x86'da (AVX2). Apple Silicon'da (`sdot`) aynı ölçüm:
+**307.219 → 571.428 değerlendirme/sn, yani 1,86 kat.** Fark, .NET'in o
+makinede 128-bit vektör kullanmasından: eski yol tek seferde 8 değer
+işlerken `sdot` 16 baytı dörder gruplayarak işliyor. Düğüm
 sayıları birebir aynı kaldı (465.661), yani motor farklı oynamıyor — sadece
 aynı işi daha hızlı yapıyor.
 
